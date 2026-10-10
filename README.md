@@ -18,6 +18,7 @@ Requires Node 20+.
 ## Using it
 
 1. Pick **reactor type**, **interior size** (1–24 per axis, casing excluded), **fuel** (all 81 SFR oxide/nitride/zirconium-alloy and 27 MSR fluoride fuels), SFR heating fluid, neutron source type.
+   **Multiple fuels**: add up to 7 more fuels under the main one (*+ add fuel…*). The optimizer then decides which fuel goes into every cell / vessel together with the rest of the design (it may leave out fuels that do not help the objective unless *Use every listed fuel* is on). Each component uses its own fuel's heat, efficiency, criticality, lifetime and self-priming; MSR vessels only bunch with adjacent vessels of the **same** fuel (MoltenSaltFissionLogic.formFuelBunches); SFR cells never bunch. Stats show a per-fuel table (running / placed, heat share, consumption); in the views each fuel slot has its own colour (C, C2, C3… / V, V2…).
 2. Pick the **objective**: *output* (effective heat), *efficiency*, *balanced* (output × efficiency) or *breeding* (maximum fuel consumption rate, fuel/h — the most running, fully cooled fuel components in producing clusters; in NC:O every running component consumes fuel at the same base rate regardless of heat multiplier, so this is a fuel-count objective with effective heat as tie-breaker; useful for breeding isotopes or processing fuel fast), optional constraints *max fuel components* and *min efficiency*.
 3. Choose allowed **moderators / reflectors / conductors / heat sinks or heaters** (“no rare” drops the hard-to-get ones), symmetry (X/Y/Z mirror – much faster and usually as good), time limit and worker count.
 4. **Optimize**. The live best layout updates while the search runs; when it finishes each worker's best layout is added to the **Compare** table (best stable value per column highlighted, deltas relative to the selected layout).
@@ -54,7 +55,16 @@ The **Turbine** tab designs the best NC:O steam turbine(s) for the selected reac
 * Rotor: an exact dynamic programme over all blade/stator sequences (state = blade counts per type), for every length 1–24; then every diameter / shaft width is scored.
 * Dynamo walls: coil validity is the fixed point of the coil rules (Mg next to a bearing or connector, Be next to Mg, Al next to two Mg, Au next to Al, Cu next to Be, Ag next to Au and Cu, connectors next to any coil); conductivity = Σ / max(shaft², coils), optimised by simulated annealing per candidate geometry.
 * Output: power, RF/mB, exterior size, every efficiency factor explained, rotor layer strip with ideal vs. actual expansion, the coil wall, a parts list and size/power alternatives. Very large steam flows are split across several identical turbines.
-* Assumptions: a single turbine type per design (both end walls identical), inlet/outlet placed in a wall corner, ideal heat exchanger for MSR, steady state (spin-up only affects how fast full power is reached).
+* Assumptions: a single turbine type per design (both end walls identical), inlet/outlet placed in a wall corner, steady state (spin-up only affects how fast full power is reached). For MSR the steam comes from the designed heat exchanger (below); before one is designed, a lossless exchanger is assumed.
+
+## Heat exchanger (MSR)
+
+The **Heat exch.** tab (MSR layouts) designs heat exchanger(s) that turn the reactor's hot coolant into high-pressure steam for the turbine (`packages/engine/src/hx.ts`, ported from `HeatExchangerLogic`, `HeatExchangerFlowHelper`, `HeatExchangerTubeNetwork`, `HeatExchangerRecipes`, `BasicRecipe`, default config):
+
+* Generic steady-state simulator `simulateHX(layout)`: tube networks through open tube faces (dangling / missing inlet-outlet checks), shell connectivity and baffles, flow directions from every inlet–outlet pair's shortest paths (exact port of the flow helper), useful tubes, mean tube/shell flow, `flowCosine` and the contraflow test (< 1/24), arithmetic mean temperature difference (LMTD off), temperature-cross rejection, flow-direction multipliers (water prefers upward flow: ×1.5 up / ×0.5 down), heat moved = ΔT × multipliers × Σ tube coefficient on the cooled side and × retention on the heated side; tube types copper 16 / 0.9, hard carbon 24 / 0.95, thermoconducting 32 / 1.
+* Recipes: every hot heater coolant (NaK, Iron-NaK, …) 1 mB → 1 mB, 256 heat (128 × NaK multiplier 2), 800 → 400 K; water 1 mB → 4 mB HP steam, 64 heat, 300 → 600 K (preheated water 32 heat, 400 → 600 K).
+* Designer: a cross-flow exchanger — straight tube rows along X (open only east/west; inlet on the east wall, outlet on the west wall), one coolant type per row, shell inlets under the west column on the bottom face and outlets above the east column on the top face, so water rises against the coolant (upward bonus, contraflow). It picks the smallest exterior that processes all hot coolant, verifies it with the exact simulator (adds rows where edge effects lose the upward bonus), splits huge flows across several identical exchangers, and compares the three tube types. Output: steam, size, coolant circuits, an east-wall map of which row carries which coolant, build steps and a parts list. The Turbine tab then uses this steam.
+* Assumptions: all inputs supplied continuously (water unlimited), exchanger switched on (redstone / computer), one exchanger design per reactor (several identical copies if needed).
 
 ## Optimizer
 
@@ -88,8 +98,9 @@ Results are stochastic; run a few times / with more workers and compare.
 | Method | Path | |
 |---|---|---|
 | GET | `/api/meta` | fuels, components, rules, sources, worker count |
-| POST | `/api/simulate` | `{reactor, dims, fuelId, sfrCoolant?, grid, sourceType?}` → stats, per-block explanation, source plan, layout JSON |
+| POST | `/api/simulate` | `{reactor, dims, fuelId, fuelIds?, sfrCoolant?, grid, sourceType?}` → stats, per-block explanation, source plan, layout JSON |
 | POST | `/api/turbine` | `{steamRate, allowedBlades?, allowStators?, allowedCoils?, maxDiameter?, maxLength?, turbines?}` → best turbine + alternatives |
+| POST | `/api/hx` | `{hotCoolant: {name: mB/t}, tubeType?, coldFluid?, maxSize?, exchangers?}` → best heat-exchanger design + tube-type alternatives |
 | POST | `/api/optimize` | config (see `apps/server/src/validate.ts`) → `{jobId}` |
 | GET | `/api/jobs/:id` | snapshot incl. results |
 | GET | `/api/jobs/:id/events` | SSE `progress` / `done` |
@@ -98,6 +109,8 @@ Results are stochastic; run a few times / with more workers and compare.
 | GET | `/api/library` | all library entries |
 | DELETE | `/api/library/:id` | remove an entry |
 
+Multi-fuel: `fuelIds` = fuel list with `fuelId` first (max 8); fuel slot k ≥ 1 is block id `40 + k − 1` (`FUELX0`), keys `cell_2` / `vessel_2`… in layout JSON (which then carries `fuelIds`). `/api/optimize` also takes `requireAllFuels`. Stats include `fuelBreakdown` (per fuel: placed, running, producing, perHour, rawHeating, effectiveHeating — MSR: share of the cluster's heater output by raw heat). The library key includes the whole fuel list.
+
 `/api/optimize` also accepts `initial` (grid to improve), `cooperate` (default true) and `useLibrary` (default true); job snapshots include per-worker `history` (`[ms, best stable H/t, valid]`), `librarySeeds` and `libraryAdded`.
 
 Grid encoding: `index = x + X·(y + Y·z)`, Y vertical; block ids in `packages/engine/src/blocks.ts`.
@@ -105,8 +118,8 @@ Grid encoding: `index = x + X·(y + Y·z)`, Y vertical; block ids in `packages/e
 ## Layout
 
 ```
-packages/engine/src   components.ts (config data) · blocks.ts · rules.ts · simulator.ts · analysis.ts · optimizer.ts · turbine.ts · layout.ts
-packages/engine/test  simulator.test.ts · reference.ts (literal Java port oracle) · bench.ts (CASE=sfr5s|sfr7|sfr7s|tbu5s|msr5s) · simbench.ts · harness.ts
+packages/engine/src   components.ts (config data) · blocks.ts · rules.ts · simulator.ts · analysis.ts · optimizer.ts · turbine.ts · hx.ts · layout.ts
+packages/engine/test  simulator.test.ts · multifuel.test.ts · turbine.test.ts · hx.test.ts · reference.ts (literal Java port oracle) · bench.ts (CASE=sfr5s|sfr7|sfr7s|tbu5s|msr5s) · simbench.ts · harness.ts
 apps/server/src       index.ts (routes) · jobs.ts (worker pool) · worker.ts · validate.ts · library.ts (result library) · exchange.ts (shared best-layout buffer)
-apps/web/src          App.tsx · components/{ConfigPanel,Viewer3D,LayerGrid,StatsPanel,Inspector,Compare,TurbinePanel,ProgressChart,LibraryPanel}.tsx
+apps/web/src          App.tsx · components/{ConfigPanel,Viewer3D,LayerGrid,StatsPanel,Inspector,Compare,TurbinePanel,HXPanel,ProgressChart,LibraryPanel}.tsx
 ```

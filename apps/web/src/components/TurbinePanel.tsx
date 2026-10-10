@@ -22,13 +22,15 @@ const COIL_ABBR = ['Mg', 'Be', 'Al', 'Au', 'Cu', 'Ag'];
 interface Props {
   stats: ReactorStats; layoutKey: string; settings: TurbineSettings; setSettings: (s: TurbineSettings) => void;
   result: TurbineOptimizeResult | null; onResult: (r: TurbineOptimizeResult) => void;
+  /** MSR: steam produced by the designed heat exchanger (replaces the lossless estimate) */
+  hxSteam?: number | null;
 }
 
-export default function TurbinePanel({ stats, layoutKey, settings, setSettings, result, onResult }: Props) {
+export default function TurbinePanel({ stats, layoutKey, settings, setSettings, result, onResult, hxSteam }: Props) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [view, setView] = useState(0); // index into alternatives (-1 = best)
-  const autoSteam = reactorSteam(stats);
+  const autoSteam = stats.reactor === 'msr' && hxSteam != null ? hxSteam : reactorSteam(stats);
   const steam = settings.steamOverride === '' ? autoSteam : Number(settings.steamOverride);
   const set = <K extends keyof TurbineSettings>(k: K, v: TurbineSettings[K]) => setSettings({ ...settings, [k]: v });
   const toggle = (list: string[], id: string) => (list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
@@ -54,7 +56,7 @@ export default function TurbinePanel({ stats, layoutKey, settings, setSettings, 
   return (
     <div className="panel turbine">
       <div className="tsteam">
-        <div><div className="muted small">Steam from reactor</div><b>{fmt(autoSteam, 1)} mB/t</b> <span className="muted small">high-pressure steam{stats.reactor === 'msr' ? ' (hot coolant → ideal heat exchanger)' : ''}</span></div>
+        <div><div className="muted small">Steam from reactor</div><b>{fmt(autoSteam, 1)} mB/t</b> <span className="muted small">high-pressure steam{stats.reactor === 'msr' ? (hxSteam != null ? ' from the designed heat exchanger' : ' (lossless heat-exchanger estimate — design one in the Heat exchanger tab)') : ''}</span></div>
         <label className="small">Override mB/t <input type="number" min={1} placeholder="auto" value={settings.steamOverride} onChange={(e) => set('steamOverride', e.target.value === '' ? '' : Number(e.target.value))} /></label>
       </div>
       <details className="tset">

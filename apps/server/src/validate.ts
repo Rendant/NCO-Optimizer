@@ -1,5 +1,5 @@
 /** Request validation for the HTTP API (kept explicit so errors are readable for the UI). */
-import { TURBINE_FLUIDS, TURBINE_BLADES, TURBINE_COILS, FUELS, MODERATORS, REFLECTORS, COOLER_NAMES, HEATER_NAMES, SFR_COOLANTS, SOURCES, NUM_BLOCKS, type OptimizeConfig, type ReactorType } from '@ncopt/engine';
+import { HX_TUBES, TURBINE_FLUIDS, TURBINE_BLADES, TURBINE_COILS, FUELS, MODERATORS, REFLECTORS, COOLER_NAMES, HEATER_NAMES, SFR_COOLANTS, SOURCES, NUM_BLOCKS, MAX_FUELS, type OptimizeConfig, type ReactorType } from '@ncopt/engine';
 import os from 'node:os';
 
 export class BadRequest extends Error {}
@@ -12,7 +12,7 @@ export function parseDims(d: unknown): [number, number, number] {
   return dims;
 }
 
-export function parseBase(b: any): { reactor: ReactorType; dims: [number, number, number]; fuelId: string; sfrCoolant?: string } {
+export function parseBase(b: any): { reactor: ReactorType; dims: [number, number, number]; fuelId: string; fuelIds?: string[]; sfrCoolant?: string } {
   const reactor = b?.reactor;
   if (reactor !== 'sfr' && reactor !== 'msr') fail('reactor must be "sfr" or "msr"');
   const dims = parseDims(b.dims);
@@ -21,7 +21,21 @@ export function parseBase(b: any): { reactor: ReactorType; dims: [number, number
   if (fuel!.reactor !== reactor) fail(`fuel ${fuel!.name} is not a ${reactor.toUpperCase()} fuel`);
   const sfrCoolant = b.sfrCoolant ?? 'water';
   if (reactor === 'sfr' && !SFR_COOLANTS.some((c) => c.id === sfrCoolant)) fail(`unknown SFR coolant "${sfrCoolant}"`);
-  return { reactor, dims, fuelId: b.fuelId, sfrCoolant: reactor === 'sfr' ? sfrCoolant : undefined };
+  // multi-fuel: fuelIds = candidate fuel list (the primary fuelId first)
+  let fuelIds: string[] | undefined;
+  if (b.fuelIds != null) {
+    if (!Array.isArray(b.fuelIds)) fail('fuelIds must be an array of fuel ids');
+    const ids = [b.fuelId, ...(b.fuelIds as string[])].filter((x, k, a) => a.indexOf(x) === k);
+    if (ids.length > MAX_FUELS) fail(`at most ${MAX_FUELS} fuels`);
+    for (const id of ids) {
+      const f = FUELS.find((x) => x.id === id);
+      if (!f) fail(`unknown fuel "${id}"`);
+      if (f!.reactor !== reactor) fail(`fuel ${f!.name} is not a ${reactor.toUpperCase()} fuel`);
+      if (f!.intrinsicFlux !== 0) fail(`fuel ${f!.name} (intrinsic flux) is not supported`);
+    }
+    if (ids.length > 1) fuelIds = ids;
+  }
+  return { reactor, dims, fuelId: b.fuelId, ...(fuelIds ? { fuelIds } : {}), sfrCoolant: reactor === 'sfr' ? sfrCoolant : undefined };
 }
 
 export function parseGrid(g: unknown, n: number): Uint8Array {
@@ -61,6 +75,7 @@ export function parseOptimize(b: any): { cfg: OptimizeConfig; workers: number; o
   if (!cfg.allowedCoolers.length) fail('allow at least one cooling component');
   if (b.maxFuel != null && b.maxFuel !== '') { const m = Number(b.maxFuel); if (!Number.isInteger(m) || m < 1) fail('maxFuel must be a positive integer'); cfg.maxFuel = m; }
   if (b.minEfficiency != null && b.minEfficiency !== '') { const m = Number(b.minEfficiency); if (!(m >= 0)) fail('minEfficiency must be >= 0'); cfg.minEfficiency = m; }
+  if (cfg.fuelIds && b.requireAllFuels) cfg.requireAllFuels = true;
   if (b.seed != null && b.seed !== '') cfg.seed = Number(b.seed) >>> 0;
   if (b.initial != null) cfg.initial = Array.from(parseGrid(b.initial, base.dims[0] * base.dims[1] * base.dims[2]));
   const maxWorkers = Math.max(1, os.availableParallelism?.() ?? os.cpus().length);
@@ -92,4 +107,26 @@ export function parseTurbine(b: any) {
     steamRate, fluidId, allowedBlades, allowedCoils, allowStators: b.allowStators !== false,
     maxDiameter: int(b.maxDiameter, 3, 24, 'maxDiameter'), maxLength: int(b.maxLength, 1, 24, 'maxLength'), turbines: int(b.turbines, 1, 1000, 'turbines'),
   };
+}
+
+export function parseHX(b: any) {
+  const hc = b?.hotCoolant;
+  if (!hc || typeof hc !== 'object') fail('hotCoolant must be an object {coolant name: mB/t}');
+  const hotCoolant: Record<string, number> = {};
+  for (const [k, v] of Object.entries(hc)) {
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < 0 || n > 1e8) fail(`hotCoolant["${k}"] must be a non-negative number of mB/t`);
+    if (n > 0) hotCoolant[String(k).slice(0, 60)] = n;
+  }
+  if (!Object.keys(hotCoolant).length) fail('the reactor produces no hot coolant');
+  if (Object.keys(hotCoolant).length > 64) fail('too many coolant types');
+  const tubeType = b.tubeType == null || b.tubeType === '' || b.tubeType === 'auto' ? undefined : String(b.tubeType);
+  if (tubeType && !HX_TUBES.some((t) => t.id === tubeType)) fail(`unknown tube type "${tubeType}"`);
+  const coldFluid = b.coldFluid ?? 'water';
+  if (!['water', 'preheated_water'].includes(coldFluid)) fail('coldFluid must be water | preheated_water');
+  const int = (v: unknown, lo: number, hi: number, name: string) => {
+    if (v == null || v === '') return undefined;
+    const n = Number(v); if (!Number.isInteger(n) || n < lo || n > hi) fail(`${name} must be an integer ${lo}..${hi}`); return n;
+  };
+  return { hotCoolant, tubeType: tubeType as any, coldFluid, maxSize: int(b.maxSize, 1, 24, 'maxSize'), exchangers: int(b.exchangers, 1, 64, 'exchangers') };
 }

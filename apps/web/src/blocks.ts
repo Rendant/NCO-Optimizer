@@ -1,5 +1,8 @@
 /** Visual identity of blocks (colors / short labels) shared by the 2D and 3D views. */
-import { AIR, FUEL, MOD0, REFL0, CONDUCTOR, COOLER0, COOLER_NAMES, NUM_BLOCKS, blockName, blockKey, type ReactorType } from '@ncopt/engine';
+import { AIR, FUEL, FUELX0, MOD0, REFL0, CONDUCTOR, COOLER0, COOLER_NAMES, NUM_BLOCKS, blockName, blockKey, fuelSlot, type ReactorType } from '@ncopt/engine';
+
+/** Colors of fuel slots 1..7 (slot 0 = green). */
+const FUEL_COLORS = ['#22c55e', '#f472b6', '#fb923c', '#a3e635', '#e879f9', '#fde047', '#2dd4bf', '#f87171'];
 
 const COOLER_COLORS: Record<string, string> = {
   water: '#3b82f6', iron: '#a8a29e', redstone: '#dc2626', quartz: '#e7e5e4', obsidian: '#4c1d95', nether_brick: '#7f1d1d',
@@ -18,7 +21,7 @@ const COOLER_ABBR: Record<string, string> = {
 
 export function blockColor(b: number): string {
   if (b === AIR) return '#000000';
-  if (b === FUEL) return '#22c55e';
+  if (b === FUEL || b >= FUELX0) return FUEL_COLORS[fuelSlot(b)] ?? '#22c55e';
   if (b === MOD0) return '#3f3f46';
   if (b === MOD0 + 1) return '#d6d3d1';
   if (b === MOD0 + 2) return '#0e7490';
@@ -31,6 +34,7 @@ export function blockColor(b: number): string {
 export function blockAbbr(b: number, reactor: ReactorType): string {
   if (b === AIR) return '';
   if (b === FUEL) return reactor === 'sfr' ? 'C' : 'V';
+  if (b >= FUELX0) return `${reactor === 'sfr' ? 'C' : 'V'}${fuelSlot(b) + 1}`;
   if (b === MOD0) return 'Gr';
   if (b === MOD0 + 1) return 'Be';
   if (b === MOD0 + 2) return 'HW';

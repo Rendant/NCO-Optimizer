@@ -148,3 +148,16 @@ code { background: var(--panel2); padding: 1px 5px; border-radius: 4px; }
 .libtbl { width: 100%; font-size: 11px; }
 .libtbl td { padding: 2px 3px; white-space: nowrap; }
 .libtbl tr.dim { opacity: .5; }
+.hxwrap { display: flex; gap: 12px; align-items: flex-start; }
+.hxgrid { display: grid; gap: 2px; margin-top: 4px; padding: 4px; background: var(--panel2); border-radius: 6px; width: max-content; }
+.hxgrid i { width: 14px; height: 14px; border-radius: 2px; border: 1px solid #0006; }
+.hxsteps { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 3px; }
+i.sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+
+/* multi-fuel list */
+.fuellist { display: flex; flex-direction: column; gap: 3px; margin: 4px 0 6px; }
+.fuelrow { display: flex; align-items: center; gap: 6px; font-size: 12px; background: var(--panel2, #1f1f23); border-radius: 4px; padding: 3px 6px; }
+.fuelrow i { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+.fuelrow .fn { font-weight: 600; white-space: nowrap; }
+.fuelrow small { opacity: .7; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fuelrow .x { padding: 0 6px; line-height: 16px; }

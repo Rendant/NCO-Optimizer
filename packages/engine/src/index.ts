@@ -6,3 +6,4 @@ export * from './analysis.js';
 export * from './optimizer.js';
 export * from './layout.js';
 export * from './turbine.js';
+export * from './hx.js';

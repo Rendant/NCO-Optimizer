@@ -14,6 +14,10 @@ export interface Meta {
 
 export interface OptimizeRequest {
   reactor: ReactorType; dims: [number, number, number]; fuelId: string; sfrCoolant?: string;
+  /** multi-fuel: candidate fuels (fuelIds[0] = fuelId) */
+  fuelIds?: string[];
+  /** multi-fuel: every fuel must be used */
+  requireAllFuels?: boolean;
   objective: 'output' | 'efficiency' | 'balanced' | 'breeding';
   allowedModerators: string[]; allowedReflectors: string[]; allowedCoolers: string[]; allowConductors: boolean;
   maxFuel?: number | ''; minEfficiency?: number | ''; symmetry: { x: boolean; y: boolean; z: boolean };
@@ -49,7 +53,7 @@ async function json<T>(r: Response): Promise<T> {
 
 export const api = {
   meta: () => fetch('/api/meta').then((r) => json<Meta>(r)),
-  simulate: (b: { reactor: ReactorType; dims: [number, number, number]; fuelId: string; sfrCoolant?: string; grid: number[]; sourceType?: string }) =>
+  simulate: (b: { reactor: ReactorType; dims: [number, number, number]; fuelId: string; fuelIds?: string[]; sfrCoolant?: string; grid: number[]; sourceType?: string }) =>
     fetch('/api/simulate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) }).then((r) => json<SimDetail>(r)),
   optimize: (b: OptimizeRequest) =>
     fetch('/api/optimize', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) }).then((r) => json<{ jobId: string; workers: number }>(r)),

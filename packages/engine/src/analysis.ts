@@ -1,6 +1,6 @@
 /** Per-block explanations and neutron source planning on top of the simulator state. */
 import { Simulator, DIR_NAMES, DIRS, opposite, ReactorStats } from './simulator.js';
-import { FUEL, COOLER0, CONDUCTOR, AIR, isModerator, isReflector, MOD0, REFL0, blockKey, blockName } from './blocks.js';
+import { COOLER0, CONDUCTOR, AIR, isModerator, isReflector, isFuel, isCooler, MOD0, REFL0, blockKey, blockName } from './blocks.js';
 import { MODERATORS, REFLECTORS, COOLING_RATES, SOURCES } from './components.js';
 import { adjacentSatisfied } from './rules.js';
 
@@ -15,6 +15,7 @@ export interface BlockInfo {
   active: boolean;
   cluster: number;
   fuel?: {
+    fuelId: string; fuelName: string;
     running: boolean; primed: boolean; flux: number; criticalityThreshold: number; heatMult: number; efficiency: number;
     moderatorEfficiencyFactor: number; fluxEfficiencyFactor: number; sourceEfficiency: number; rawHeating: number; effectiveHeating: number;
     bunch: { id: number; size: number; surfaceFactor: number; bunchingFactor: number; flux: number };
@@ -32,10 +33,11 @@ export function explainBlock(sim: Simulator, i: number): BlockInfo {
   const pos = sim.coords(i);
   const info: BlockInfo = {
     index: i, pos, block: b, key: blockKey(b, reactor), name: blockName(b, reactor),
-    category: b === AIR ? 'air' : b === FUEL ? 'fuel' : isModerator(b) ? 'moderator' : isReflector(b) ? 'reflector' : b === CONDUCTOR ? 'conductor' : 'cooler',
+    category: b === AIR ? 'air' : isFuel(b) ? 'fuel' : isModerator(b) ? 'moderator' : isReflector(b) ? 'reflector' : b === CONDUCTOR ? 'conductor' : 'cooler',
     active: false, cluster: sim.cluster[i], notes: [],
   };
-  if (b === FUEL) {
+  if (isFuel(b)) {
+    const fuelDef = sim.fuelAt(i);
     const bunch = sim.bunchOf[i];
     const running = sim.running[i] === 1;
     const lines: LineInfo[] = [];
@@ -51,14 +53,15 @@ export function explainBlock(sim: Simulator, i: number): BlockInfo {
       }
     }
     const fluxEff = running ? sim.fluxEfficiencyFactor(bunch) : 0;
-    const raw = running ? (sim.fuel.heat * sim.bunchHeatMult(bunch)) / sim.bunchSize[bunch] : 0;
+    const raw = running ? (fuelDef.heat * sim.bunchHeatMult(bunch)) / sim.bunchSize[bunch] : 0;
     const eff = sim.fuelEfficiency(i);
     info.active = running;
     info.fuel = {
+      fuelId: fuelDef.id, fuelName: fuelDef.name,
       running, primed: sim.bunchPrimed[bunch] === 1, flux: sim.bunchFlux[bunch], criticalityThreshold: sim.criticalityThreshold(bunch),
       heatMult: running ? sim.bunchHeatMult(bunch) / sim.bunchSize[bunch] : 0, efficiency: eff,
       moderatorEfficiencyFactor: sim.moderatorEfficiencyFactor(i), fluxEfficiencyFactor: fluxEff, sourceEfficiency: sim.srcEff[i],
-      rawHeating: raw, effectiveHeating: sim.fuel.heat * eff,
+      rawHeating: raw, effectiveHeating: fuelDef.heat * eff,
       bunch: { id: bunch, size: sim.bunchSize[bunch], surfaceFactor: sim.surfaceFactor(bunch), bunchingFactor: sim.bunchingFactor(bunch), flux: sim.bunchFlux[bunch] },
       lines,
     };
@@ -82,7 +85,7 @@ export function explainBlock(sim: Simulator, i: number): BlockInfo {
     info.active = sim.reflActive[i] === 1;
     info.reflector = { active: info.active, efficiency: r.efficiency, reflectivity: r.reflectivity };
     if (!info.active) info.notes.push('Reflectors need a running fuel component 1-2 moderators away along a straight line.');
-  } else if (b >= COOLER0) {
+  } else if (isCooler(b)) {
     const t = b - COOLER0;
     const rule = sim.rules[t];
     const conditions = rule.subs.map((s) => {
@@ -142,7 +145,7 @@ export function sourceCandidates(sim: Simulator): SourcePlacement[] {
       while (x >= 0 && y >= 0 && z >= 0 && x < X && y < Y && z < Z) {
         const i = sim.index(x, y, z), b = sim.grid[i];
         if (isReflector(b) && REFLECTORS[b - REFL0].reflectivity >= 1) break;
-        if (b === FUEL) { out.push({ wall, facing: DIR_NAMES[d], target: [x, y, z], targetIndex: i }); break; }
+        if (isFuel(b)) { out.push({ wall, facing: DIR_NAMES[d], target: [x, y, z], targetIndex: i }); break; }
         x += dx; y += dy; z += dz;
       }
     }
@@ -159,9 +162,13 @@ export function planSources(sim: Simulator, grid: Uint8Array, sourceTypeId = 'ca
   const ref = sim.evaluate(grid);
   const target = new Uint8Array(sim.running);
   const targetCount = target.reduce((a, v) => a + v, 0);
-  if (sim.fuel.selfPriming || targetCount === 0) {
-    return { needed: false, selfPriming: sim.fuel.selfPriming, sourceType: src.id, sources: [], fullyPrimed: true, unprimedRunning: 0, stats: ref };
+  // self-priming fuels need no source: only running components of other fuels are targets
+  for (let i = 0; i < sim.N; i++) if (target[i] && sim.fuelAt(i).selfPriming) target[i] = 0;
+  const allSelf = sim.fuels.every((f) => f.selfPriming);
+  if (allSelf || target.reduce((a, v) => a + v, 0) === 0) {
+    return { needed: false, selfPriming: allSelf || targetCount > 0, sourceType: src.id, sources: [], fullyPrimed: true, unprimedRunning: 0, stats: ref };
   }
+  const targetCountNS = target.reduce((a, v) => a + v, 0);
   const cands = sourceCandidates(sim).filter((c) => target[c.targetIndex]);
   const probe = new Simulator([sim.X, sim.Y, sim.Z], { ...sim.opts, primed: [] });
   const chosen: SourcePlacement[] = [];
@@ -173,7 +180,7 @@ export function planSources(sim: Simulator, grid: Uint8Array, sourceTypeId = 'ca
     return n;
   };
   let current = runCount(chosen);
-  while (current < targetCount) {
+  while (current < targetCountNS) {
     let best: SourcePlacement | null = null, bestN = current;
     const seenTargets = new Map<number, number>();
     for (const c of cands) {
@@ -194,7 +201,7 @@ export function planSources(sim: Simulator, grid: Uint8Array, sourceTypeId = 'ca
       if (!best) break;
       chosen.push(best); usedWalls.add(best.wall.join(','));
       const n = runCount(chosen);
-      if (n <= current && chosen.length > 3 * targetCount) break;
+      if (n <= current && chosen.length > 3 * targetCountNS) break;
       current = n;
       continue;
     }
@@ -207,5 +214,5 @@ export function planSources(sim: Simulator, grid: Uint8Array, sourceTypeId = 'ca
   }
   probe.opts.primed = chosen.map((c) => ({ index: c.targetIndex, efficiency: src.efficiency }));
   const stats = probe.evaluate(grid);
-  return { needed: true, selfPriming: false, sourceType: src.id, sources: chosen, fullyPrimed: current >= targetCount, unprimedRunning: targetCount - current, stats };
+  return { needed: true, selfPriming: false, sourceType: src.id, sources: chosen, fullyPrimed: current >= targetCountNS, unprimedRunning: targetCountNS - current, stats };
 }

@@ -8,11 +8,12 @@
  * with steady-state (fixed point) semantics instead of tick order.
  */
 import { FISSION_CONFIG, FuelDef, MODERATORS, REFLECTORS, ReactorType, SINK_RULES, HEATER_RULES, COOLING_RATES, SFR_COOLANTS, HEATER_COOLANTS } from './components.js';
-import { FUEL, MOD0, REFL0, CONDUCTOR, COOLER0, NUM_BLOCKS, isModerator, isReflector } from './blocks.js';
+import { FUEL, MOD0, REFL0, CONDUCTOR, COOLER0, COOLER_END, NUM_BLOCKS, FUELX0, MAX_FUELS, isModerator, isReflector, isFuel, fuelSlot } from './blocks.js';
 
 /** Blocks that take part in neutronics (fuel, moderators, reflectors). Everything else is equivalent for flux. */
 const NEUTRONIC = new Uint8Array(NUM_BLOCKS);
-for (let b = 0; b < NUM_BLOCKS; b++) NEUTRONIC[b] = b === FUEL || isModerator(b) || isReflector(b) ? 1 : 0;
+for (let b = 0; b < NUM_BLOCKS; b++) NEUTRONIC[b] = isFuel(b) || isModerator(b) || isReflector(b) ? 1 : 0;
+const isCoolB = (b: number) => b >= COOLER0 && b < COOLER_END;
 const TARGET_CODE: Record<string, number> = { casing: 0, conductor: 1, moderator: 2, reflector: 3, fuel: 4, cooler: 5, unsupported: 6 };
 import { PlacementRule, parseRule, adjacentSatisfied } from './rules.js';
 
@@ -23,7 +24,13 @@ export const opposite = (d: number) => d ^ 1;
 
 export interface SimOptions {
   reactor: ReactorType;
+  /** Fuel of slot 0 (block FUEL). */
   fuel: FuelDef;
+  /**
+   * Multi-fuel layouts: fuel per slot (fuels[0] must equal `fuel`); slot k >= 1 is placed as block FUELX0 + k - 1.
+   * MSR vessels only bunch with face-adjacent vessels of the same fuel.
+   */
+  fuels?: FuelDef[];
   /** SFR heating fluid id (water / preheated_water) */
   sfrCoolant?: string;
   /**
@@ -91,10 +98,25 @@ export interface ReactorStats {
   /** Fuel consumption: SFR ingots per hour, MSR mB per hour */
   fuelPerHour: number;
   fuelUnit: string;
+  /** Per fuel (layout fuel slot order): placed / running components, consumption and heat. */
+  fuelBreakdown: FuelUsage[];
   /** MSR: hot coolant output per heater coolant (mB/t) */
   hotCoolant: Record<string, number>;
   meanHeatingSpeedMultiplier: number;
   clusters: ClusterStats[];
+}
+
+export interface FuelUsage {
+  fuelId: string;
+  name: string;
+  placed: number;
+  running: number;
+  /** Running components in producing clusters (SFR: wall-connected) */
+  producing: number;
+  /** SFR ingots/h, MSR mB/h */
+  perHour: number;
+  rawHeating: number;
+  effectiveHeating: number;
 }
 
 interface Line {
@@ -120,6 +142,8 @@ export class Simulator {
   readonly X: number; readonly Y: number; readonly Z: number; readonly N: number;
   readonly opts: SimOptions;
   readonly fuel: FuelDef;
+  /** Fuel per slot (slot 0 = `fuel`). */
+  readonly fuels: FuelDef[];
   /** neighbor index per (i*6+d), -1 = casing */
   readonly nb: Int32Array;
   readonly rules: PlacementRule[];
@@ -183,10 +207,15 @@ export class Simulator {
     if ([X, Y, Z].some((v) => v < FISSION_CONFIG.minSize || v > FISSION_CONFIG.maxSize || !Number.isInteger(v))) {
       throw new Error(`Interior dimensions must be integers between ${FISSION_CONFIG.minSize} and ${FISSION_CONFIG.maxSize}`);
     }
-    if (opts.fuel.reactor !== opts.reactor) throw new Error(`Fuel ${opts.fuel.name} cannot be used in a ${opts.reactor.toUpperCase()}`);
-    if (opts.fuel.intrinsicFlux !== 0) throw new Error('Fuels with intrinsic flux (TRISO / pebble bed) are not supported');
+    const fuels = opts.fuels?.length ? opts.fuels : [opts.fuel];
+    if (fuels[0] !== opts.fuel && fuels[0].id !== opts.fuel.id) throw new Error('fuels[0] must be the primary fuel');
+    if (fuels.length > MAX_FUELS) throw new Error(`At most ${MAX_FUELS} fuels per layout`);
+    for (const f of fuels) {
+      if (f.reactor !== opts.reactor) throw new Error(`Fuel ${f.name} cannot be used in a ${opts.reactor.toUpperCase()}`);
+      if (f.intrinsicFlux !== 0) throw new Error('Fuels with intrinsic flux (TRISO / pebble bed) are not supported');
+    }
     this.X = X; this.Y = Y; this.Z = Z; this.N = X * Y * Z;
-    this.opts = opts; this.fuel = opts.fuel;
+    this.opts = opts; this.fuel = opts.fuel; this.fuels = fuels;
     const N = this.N;
     this.nb = new Int32Array(N * 6);
     for (let z = 0; z < Z; z++) for (let y = 0; y < Y; y++) for (let x = 0; x < X; x++) {
@@ -336,7 +365,8 @@ export class Simulator {
   evaluate(grid: Uint8Array): ReactorStats {
     if (grid.length !== this.N) throw new Error(`Grid length ${grid.length} != ${this.N}`);
     const N = this.N;
-    for (let i = 0; i < N; i++) if (grid[i] >= NUM_BLOCKS) throw new Error(`Invalid block id ${grid[i]} at ${i}`);
+    const maxB = FUELX0 + this.fuels.length - 1;
+    for (let i = 0; i < N; i++) if (grid[i] >= maxB) throw new Error(`Invalid block id ${grid[i]} at ${i}`);
     this.grid = grid;
     this.ensureSlots();
     if (this.slotMatches(this.slots[this.cur], grid)) this.partialEvals++;
@@ -374,7 +404,7 @@ export class Simulator {
     const { grid, N, nb } = this;
     let fc = 0;
     const fl = this.fuelList;
-    for (let i = 0; i < N; i++) if (grid[i] === FUEL) fl[fc++] = i;
+    for (let i = 0; i < N; i++) if (isFuel(grid[i])) fl[fc++] = i;
     this.fuelCount = fc;
     const bunchOf = this.bunchOf; bunchOf.fill(-1);
     const ml = this.memberList, ms = this.memberStart;
@@ -390,7 +420,7 @@ export class Simulator {
         const id = B++; ms[id] = w; ml[w++] = s0; bunchOf[s0] = id;
         for (let q = ms[id]; q < w; q++) {
           const i = ml[q];
-          for (let d = 0; d < 6; d++) { const j = nb[i * 6 + d]; if (j >= 0 && grid[j] === FUEL && bunchOf[j] < 0) { bunchOf[j] = id; ml[w++] = j; } }
+          for (let d = 0; d < 6; d++) { const j = nb[i * 6 + d]; if (j >= 0 && grid[j] === grid[s0] && bunchOf[j] < 0) { bunchOf[j] = id; ml[w++] = j; } }
         }
       }
     }
@@ -409,7 +439,11 @@ export class Simulator {
   surfaceFactor(b: number) { return Math.floor(this.bunchOpenFaces[b] / 6); }
   /** FissionFuelBunch.getBunchingFactor */
   bunchingFactor(b: number) { return Math.floor((6 * this.bunchSize[b]) / this.bunchOpenFaces[b]); }
-  criticalityThreshold(b: number) { return this.surfaceFactor(b) * this.fuel.criticality; }
+  /** Fuel of position i (must be a fuel component). */
+  fuelAt(i: number): FuelDef { return this.fuels[fuelSlot(this.grid[i])]; }
+  /** Fuel of bunch b (all members share it). */
+  bunchFuel(b: number): FuelDef { return this.fuels[fuelSlot(this.grid[this.memberList[this.memberStart[b]]])]; }
+  criticalityThreshold(b: number) { return this.surfaceFactor(b) * this.bunchFuel(b).criticality; }
 
   // ---------------------------------------------------------------- moderator lines
   /** IFissionFuelComponent.defaultDistributeFlux, geometry part (independent of activity). */
@@ -424,13 +458,13 @@ export class Simulator {
     const list = this.dList; let n = 0;
     for (let k = 0; k < nchg; k++) {
       const c = this.nChanged[k];
-      if (grid[c] === FUEL && !m[c]) { m[c] = 1; list[n++] = c; }
+      if (isFuel(grid[c]) && !m[c]) { m[c] = 1; list[n++] = c; }
       for (let d = 0; d < 6; d++) {
         let p = c;
         for (let s = 0; s <= reach; s++) {
           p = nb[p * 6 + d];
           if (p < 0) break;
-          if (grid[p] === FUEL && !m[p]) { m[p] = 1; list[n++] = p; }
+          if (isFuel(grid[p]) && !m[p]) { m[p] = 1; list[n++] = p; }
         }
       }
     }
@@ -455,7 +489,7 @@ export class Simulator {
           continue;
         }
         const mods = i - 1;
-        if (b === FUEL) {
+        if (isFuel(b)) {
           this.lineType[li] = 1; this.lineTarget[li] = p; this.lineFlux[li] = fluxSum; this.lineEff[li] = effSum / mods; this.lineLen[li] = mods;
         } else if (isReflector(b) && mods <= Math.floor(reach / 2)) {
           const r = REFLECTORS[b - REFL0];
@@ -483,19 +517,20 @@ export class Simulator {
     for (let k = 0; k < this.fuelCount; k++) srcEff[this.fuelList[k]] = 1;
     let explicit = false;
     const explicitPrimed = this.explicitPrimed;
-    if (this.opts.primed && !this.fuel.selfPriming) {
+    if (this.opts.primed && this.fuels.some((f) => !f.selfPriming)) {
       // TileFissionSource.getPrimingTarget -> setSourceEfficiency(eff, maximize=true); FissionFuelBunch.tryPriming
       // needs at least surfaceFactor sources for a bunch to become primed (always 1 for solid fuel cells).
       explicit = true;
       const sources = new Int32Array(B);
       const best = new Map<number, number>();
       for (const p of this.opts.primed) {
-        if (this.grid[p.index] !== FUEL) continue;
+        if (!isFuel(this.grid[p.index])) continue;
         sources[bunchOf[p.index]]++;
         best.set(p.index, Math.max(best.get(p.index) ?? 0, p.efficiency));
       }
-      for (let b = 0; b < B; b++) explicitPrimed[b] = sources[b] > 0 && sources[b] >= this.surfaceFactor(b) ? 1 : 0;
-      for (const [i, e] of best) srcEff[i] = e;
+      // self-priming fuels need no source (and get no source-efficiency penalty)
+      for (let b = 0; b < B; b++) explicitPrimed[b] = this.bunchFuel(b).selfPriming || (sources[b] > 0 && sources[b] >= this.surfaceFactor(b)) ? 1 : 0;
+      for (const [i, e] of best) if (!this.fuelAt(i).selfPriming) srcEff[i] = e;
     }
     const emit = this.bunchEmit;
     for (;;) {
@@ -600,7 +635,7 @@ export class Simulator {
       if (j < 0) continue;
       const b = grid[j], bit = 1 << d;
       if (b === CONDUCTOR) cond |= bit;
-      else if (b === FUEL) { if (this.running[j]) fuel |= bit; }
+      else if (isFuel(b)) { if (this.running[j]) fuel |= bit; }
       else if (this.modState[j] === 2) mod |= bit;
       else if (this.reflActive[j]) refl |= bit;
     }
@@ -611,7 +646,7 @@ export class Simulator {
     let m = 0;
     for (let d = 0; d < 6; d++) {
       const j = nb[i * 6 + d];
-      if (j >= 0 && valid[j] === 1 && grid[j] >= COOLER0 && (type < 0 || grid[j] - COOLER0 === type)) m |= 1 << d;
+      if (j >= 0 && valid[j] === 1 && isCoolB(grid[j]) && (type < 0 || grid[j] - COOLER0 === type)) m |= 1 << d;
     }
     return m;
   }
@@ -663,7 +698,7 @@ export class Simulator {
         valid[i] = v;
         for (let d = 0; d < 6; d++) {
           const j = nb[i * 6 + d];
-          if (j >= 0 && grid[j] >= COOLER0 && !this.ruleStatic[grid[j] - COOLER0] && dep[t * 32 + grid[j] - COOLER0] && mark[j] !== 1) { mark[j] = 1; this.nseed++; }
+          if (j >= 0 && isCoolB(grid[j]) && !this.ruleStatic[grid[j] - COOLER0] && dep[t * 32 + grid[j] - COOLER0] && mark[j] !== 1) { mark[j] = 1; this.nseed++; }
         }
       }
       failed[i] = 0;
@@ -674,7 +709,7 @@ export class Simulator {
     const { grid, N, nb, valid, failed, mark, dep, sp, running, modState, reflActive, nCode } = this;
     const cl = this.coolerList, last = this.coolGrid, changed = this.changedList, D = this.dList;
     let nc = 0;
-    for (let i = 0; i < N; i++) if (grid[i] >= COOLER0) cl[nc++] = i;
+    for (let i = 0; i < N; i++) if (isCoolB(grid[i])) cl[nc++] = i;
     this.coolerCount = nc; this.coolerTotal += nc; this.solves++;
     const version = this.slots.length ? this.slots[this.cur].version : 0;
     // touched cells: grid changes since the last solve, then cells whose neutronic outputs changed
@@ -709,17 +744,17 @@ export class Simulator {
     for (let k = 0; k < nGrid; k++) {
       const i = changed[k];
       last[i] = grid[i]; valid[i] = 0; failed[i] = 0;
-      if (grid[i] >= COOLER0) mark[i] = 2; // changed cooler
+      if (isCoolB(grid[i])) mark[i] = 2; // changed cooler
     }
     for (let k = nGrid; k < nch; k++) { const i = changed[k]; nCode[i] = running[i] | (modState[i] << 1) | (reflActive[i] << 3); }
     // Static rules are re-decided directly around touched cells; dynamic coolers whose inputs may have changed are seeds.
     this.nseed = 0;
     for (let k = 0; k < nch; k++) {
       const c = changed[k];
-      if (grid[c] >= COOLER0) this.visitCooler(c, false); // idempotent
+      if (isCoolB(grid[c])) this.visitCooler(c, false); // idempotent
       for (let d = 0; d < 6; d++) {
         const j = nb[c * 6 + d];
-        if (j < 0 || grid[j] < COOLER0) continue;
+        if (j < 0 || !isCoolB(grid[j])) continue;
         this.visitCooler(j, false);
         if (k < nGrid && !this.ruleStatic[grid[j] - COOLER0] && mark[j] !== 1) { mark[j] = 1; this.nseed++; }
       }
@@ -733,7 +768,7 @@ export class Simulator {
       const i = queue[qh], ti = grid[i] - COOLER0;
       for (let d = 0; d < 6; d++) {
         const j = nb[i * 6 + d];
-        if (j < 0 || grid[j] < COOLER0 || mark[j] === 3) continue;
+        if (j < 0 || !isCoolB(grid[j]) || mark[j] === 3) continue;
         const tj = grid[j] - COOLER0;
         if (this.ruleStatic[tj] || !dep[ti * 32 + tj]) continue;
         mark[j] = 3; queue[qt++] = j;
@@ -768,7 +803,7 @@ export class Simulator {
         valid[i] = ok;
         for (let d = 0; d < 6; d++) {
           const j = nb[i * 6 + d];
-          if (j >= 0 && grid[j] >= COOLER0 && !failed[j] && !inQueue[j] && !this.ruleStatic[grid[j] - COOLER0] && this.dep[t * 32 + grid[j] - COOLER0]) { queue[qt] = j; qt = (qt + 1) % cap; size++; inQueue[j] = 1; }
+          if (j >= 0 && isCoolB(grid[j]) && !failed[j] && !inQueue[j] && !this.ruleStatic[grid[j] - COOLER0] && this.dep[t * 32 + grid[j] - COOLER0]) { queue[qt] = j; qt = (qt + 1) % cap; size++; inQueue[j] = 1; }
         }
       }
       for (let k = 0; k < nc; k++) inQueue[L[k]] = 0;
@@ -783,11 +818,11 @@ export class Simulator {
   // ---------------------------------------------------------------- clusters
   isHeatConductor(i: number) {
     const b = this.grid[i];
-    return (b === FUEL && this.running[i] === 1) || (b >= COOLER0 && this.valid[i] === 1) || b === CONDUCTOR;
+    return (isFuel(b) && this.running[i] === 1) || (isCoolB(b) && this.valid[i] === 1) || b === CONDUCTOR;
   }
   isFunctionalComponent(i: number) {
     const b = this.grid[i];
-    return (b === FUEL && this.running[i] === 1) || (b >= COOLER0 && this.valid[i] === 1);
+    return (isFuel(b) && this.running[i] === 1) || (isCoolB(b) && this.valid[i] === 1);
   }
   /** Cluster members are stored contiguously: clusterMembers[clusterStart[c] .. clusterStart[c+1]). */
   clusterCount = 0;
@@ -807,7 +842,7 @@ export class Simulator {
       const s = b >= kc || (a < fc && fl[a] < kl[b]) ? fl[a++] : kl[b++];
       if (cl[s] >= 0) continue;
       const bs = grid[s];
-      if (!((bs === FUEL && running[s] === 1) || (bs >= COOLER0 && valid[s] === 1))) continue;
+      if (!((isFuel(bs) && running[s] === 1) || (isCoolB(bs) && valid[s] === 1))) continue;
       const id = C++; cs[id] = w; m[w++] = s; cl[s] = id; let wall = 0;
       for (let k = cs[id]; k < w; k++) {
         const i = m[k];
@@ -816,7 +851,7 @@ export class Simulator {
           if (j < 0) { wall = 1; continue; }
           if (cl[j] >= 0) continue;
           const b = grid[j];
-          if ((b === FUEL && running[j] === 1) || (b >= COOLER0 && valid[j] === 1) || b === CONDUCTOR) { cl[j] = id; m[w++] = j; }
+          if ((isFuel(b) && running[j] === 1) || (isCoolB(b) && valid[j] === 1) || b === CONDUCTOR) { cl[j] = id; m[w++] = j; }
         }
       }
       cw[id] = wall;
@@ -835,7 +870,7 @@ export class Simulator {
     return count === 0 ? 0 : eff / count;
   }
   fluxEfficiencyFactor(b: number) {
-    const c = this.fuel.criticality;
+    const c = this.bunchFuel(b).criticality;
     const fl = this.bunchFlux[b] / this.surfaceFactor(b);
     return (1 + Math.exp(-2 * c)) / (1 + Math.exp(2 * (fl - 2 * c)));
   }
@@ -844,7 +879,7 @@ export class Simulator {
     if (!this.running[f]) return 0;
     const b = this.bunchOf[f];
     const hm = this.bunchHeatMult(b) / this.bunchSize[b];
-    return hm * this.fuel.efficiency * this.srcEff[f] * this.moderatorEfficiencyFactor(f) * this.fluxEfficiencyFactor(b);
+    return hm * this.fuelAt(f).efficiency * this.srcEff[f] * this.moderatorEfficiencyFactor(f) * this.fluxEfficiencyFactor(b);
   }
   bunchHeatMult(b: number) {
     let s = 0;
@@ -854,7 +889,6 @@ export class Simulator {
 
   /** Heating contributions of each bunch; depends on neutronics only, so it is cached with it. */
   private computeBunchHeat() {
-    const fuel = this.fuel;
     let am = 0, pm = 0, ar = 0;
     for (let i = 0; i < this.N; i++) { const m = this.modState[i]; if (m === 2) am++; else if (m === 1) pm++; if (this.reflActive[i]) ar++; }
     this.nCounts[0] = am; this.nCounts[1] = pm; this.nCounts[2] = ar;
@@ -862,6 +896,7 @@ export class Simulator {
       if (!this.bunchEmit[b]) { this.bunchRaw[b] = 0; this.bunchEff[b] = 0; this.bunchBase[b] = 0; continue; }
       const bf = this.bunchingFactor(b);
       const fluxEff = this.fluxEfficiencyFactor(b);
+      const fuel = this.bunchFuel(b);
       let r = 0, e = 0, bs = 0;
       for (let q = this.memberStart[b]; q < this.memberStart[b + 1]; q++) {
         const f = this.memberList[q];
@@ -875,7 +910,7 @@ export class Simulator {
   }
 
   private computeStats(): ReactorStats {
-    const { grid, N, fuel } = this;
+    const { grid, N } = this;
     const cfg = FISSION_CONFIG;
     const sfr = this.opts.reactor === 'sfr';
     const clusters: ClusterStats[] = [];
@@ -892,7 +927,7 @@ export class Simulator {
         const b = grid[i];
         if (!this.isFunctionalComponent(i)) continue;
         componentCount++;
-        if (b === FUEL) {
+        if (isFuel(b)) {
           fuelCount++;
           const bunch = this.bunchOf[i];
           if (bunchDone[bunch]) continue;
@@ -934,7 +969,7 @@ export class Simulator {
         c.heatingSpeedMultiplier = c.meanEfficiency * sparsity * (c.rawHeating >= c.cooling ? 1 : c.rawHeating / c.cooling);
         for (let q = cs[c.id]; q < cs[c.id + 1]; q++) {
           const i = cm[q];
-          if (grid[i] >= COOLER0 && this.valid[i]) {
+          if (isCoolB(grid[i]) && this.valid[i]) {
             const rate = COOLING_RATES[grid[i] - COOLER0];
             const hsm = c.heatingSpeedMultiplier;
             weighted += hsm * rate; totalCooling += rate; effective += hsm * rate;
@@ -959,12 +994,37 @@ export class Simulator {
       outputFluidName = cool.product;
       rf = outputFluid * cool.rfPerOutputMB;
       // each running cell consumes one ingot per (time * undercoolingLifetimeFactor) ticks
-      for (const c of clusters) if (c.connectedToWall && c.fuelCount > 0) fuelPerHour += (c.fuelCount * 72000) / (fuel.time * c.undercoolingLifetimeFactor);
+
     } else {
       outputFluid = Object.values(hotCoolant).reduce((a, b) => a + b, 0);
       outputFluidName = 'Hot coolant';
-      for (const c of clusters) if (c.fuelCount > 0) fuelPerHour += (c.fuelCount * 72000 * 144) / (fuel.time * c.undercoolingLifetimeFactor);
+
     }
+    // per-fuel usage: each running component consumes one ingot (SFR) / 144 mB (MSR) per (time × undercooling lifetime factor) ticks
+    const usage: FuelUsage[] = this.fuels.map((f) => ({ fuelId: f.id, name: f.name, placed: 0, running: 0, producing: 0, perHour: 0, rawHeating: 0, effectiveHeating: 0 }));
+    for (let k = 0; k < this.fuelCount; k++) {
+      const i = this.fuelList[k], u = usage[fuelSlot(grid[i])];
+      u.placed++;
+      if (!this.running[i]) continue;
+      u.running++;
+      const c = this.cluster[i];
+      if (c < 0) continue;
+      const cl = clusters[c];
+      if (sfr && !cl.connectedToWall) continue;
+      u.producing++;
+      const f = this.fuelAt(i);
+      u.perHour += (72000 * (sfr ? 1 : 144)) / (f.time * cl.undercoolingLifetimeFactor);
+      // component share of its bunch heat (bunch heat is split evenly over running members)
+      const b = this.bunchOf[i];
+      let rm = 0;
+      for (let q = this.memberStart[b]; q < this.memberStart[b + 1]; q++) if (this.running[this.memberList[q]]) rm++;
+      const raw = this.bunchRaw[b] / rm;
+      u.rawHeating += raw;
+      // SFR: own efficiency-weighted heat; MSR: the cluster's heater output shared in proportion to raw heat
+      u.effectiveHeating += sfr ? (this.bunchEff[b] / rm) * cl.overcoolingEfficiencyFactor * sparsity
+        : cl.rawHeating > 0 ? (cl.heatingSpeedMultiplier * cl.cooling * raw) / cl.rawHeating : 0;
+    }
+    for (const u of usage) fuelPerHour += u.perHour;
     const runningAll = clusters.reduce((a, c) => a + c.fuelCount, 0);
     const stable = excess <= 0;
     return {
@@ -978,7 +1038,7 @@ export class Simulator {
       meanEfficiency: base <= 0 ? 0 : (sfr ? effective / base : (eff * sparsity) / base),
       disconnectedFuelClusters: disconnected, stable,
       coolantInput, outputFluid, outputFluidName, rfPerTick: rf, fuelPerHour, fuelUnit: sfr ? 'ingots/h' : 'mB/h',
-      hotCoolant, meanHeatingSpeedMultiplier: meanHSM, clusters,
+      fuelBreakdown: usage, hotCoolant, meanHeatingSpeedMultiplier: meanHSM, clusters,
     };
   }
 }

@@ -14,6 +14,7 @@ export default function Inspector({ info, onJump, air }: { info: BlockInfo | nul
       {info.fuel && (
         <>
           <dl className="kv">
+            <dt>Fuel</dt><dd>{info.fuel.fuelName}</dd>
             <dt>Status</dt><dd>{info.fuel.running ? 'critical (running)' : 'not critical'}</dd>
             <dt>Flux / threshold</dt><dd>{info.fuel.flux} / {info.fuel.criticalityThreshold}</dd>
             <dt>Heat multiplier</dt><dd>×{info.fuel.heatMult}</dd>

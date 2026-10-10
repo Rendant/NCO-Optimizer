@@ -7,11 +7,11 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   FUELS, MODERATORS, REFLECTORS, SOURCES, SFR_COOLANTS, COOLER_NAMES, HEATER_NAMES, HEATER_COOLANTS, COOLING_RATES, SINK_RULES, HEATER_RULES,
-  FISSION_CONFIG, NUM_BLOCKS, TURBINE_BLADES, TURBINE_STATOR, TURBINE_COILS, TURBINE_CONNECTOR, TURBINE_FLUIDS, TURBINE_CONFIG, blockKey, blockName, Simulator, explainAll, planSources, resolveFuel, toLayoutJSON,
+  FISSION_CONFIG, NUM_BLOCKS, TURBINE_BLADES, TURBINE_STATOR, TURBINE_COILS, TURBINE_CONNECTOR, TURBINE_FLUIDS, TURBINE_CONFIG, blockKey, blockName, Simulator, explainAll, planSources, resolveFuel, resolveFuels, isFuel, fuelSlot, toLayoutJSON,
 } from '@ncopt/engine';
 import { JobManager } from './jobs.js';
 import { Library, libraryKey } from './library.js';
-import { BadRequest, parseBase, parseGrid, parseOptimize, parseSource, parseTurbine } from './validate.js';
+import { BadRequest, parseBase, parseGrid, parseOptimize, parseSource, parseTurbine, parseHX } from './validate.js';
 import { Worker } from 'node:worker_threads';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -48,11 +48,13 @@ app.post('/api/simulate', async (req) => {
   const base = parseBase(body);
   const grid = parseGrid(body.grid, base.dims[0] * base.dims[1] * base.dims[2]);
   const sourceType = parseSource(body.sourceType);
-  const sim = new Simulator(base.dims, { reactor: base.reactor, fuel: resolveFuel(base.fuelId), sfrCoolant: base.sfrCoolant });
+  const fuels = resolveFuels(base);
+  for (const b of grid) if (isFuel(b) && fuelSlot(b) >= fuels.length) throw new BadRequest(`layout uses fuel #${fuelSlot(b) + 1} but only ${fuels.length} fuel(s) are listed`);
+  const sim = new Simulator(base.dims, { reactor: base.reactor, fuel: fuels[0], fuels, sfrCoolant: base.sfrCoolant });
   const stats = sim.evaluate(grid);
   const blocks = explainAll(sim).filter((b) => b.block !== 0);
   const plan = planSources(new Simulator(base.dims, sim.opts), grid, sourceType);
-  return { stats, blocks, sourcePlan: plan, layout: toLayoutJSON(grid, base.dims, base.reactor, base.fuelId, base.sfrCoolant) };
+  return { stats, blocks, sourcePlan: plan, layout: toLayoutJSON(grid, base.dims, base.reactor, base.fuelId, base.sfrCoolant, base.fuelIds) };
 });
 
 /** Design the best steam turbine(s) for a steam flow (runs in a worker thread, ~0.3-3 s). */
@@ -60,6 +62,16 @@ app.post('/api/turbine', async (req) => {
   const cfg = parseTurbine(req.body);
   return await new Promise((resolve, reject) => {
     const w = new Worker(new URL('./task-worker.mjs', import.meta.url), { workerData: { type: 'turbine', cfg } });
+    w.once('message', (m: any) => (m.ok ? resolve(m.result) : reject(new BadRequest(m.error))));
+    w.once('error', reject);
+  });
+});
+
+/** Design heat exchanger(s) for an MSR's hot coolant (runs in a worker thread). */
+app.post('/api/hx', async (req) => {
+  const cfg = parseHX(req.body);
+  return await new Promise((resolve, reject) => {
+    const w = new Worker(new URL('./task-worker.mjs', import.meta.url), { workerData: { type: 'hx', cfg } });
     w.once('message', (m: any) => (m.ok ? resolve(m.result) : reject(new BadRequest(m.error))));
     w.once('error', reject);
   });

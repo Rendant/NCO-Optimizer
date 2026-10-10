@@ -8,6 +8,8 @@ export interface LayoutEntry {
   reactor: ReactorType;
   dims: [number, number, number];
   fuelId: string;
+  /** multi-fuel layouts: fuel per slot (fuelIds[0] = fuelId) */
+  fuelIds?: string[];
   sfrCoolant?: string;
   grid: number[];
   stats: ReactorStats;

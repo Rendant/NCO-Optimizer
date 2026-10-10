@@ -42,7 +42,7 @@ export default function Compare({ layouts, selectedId, onSelect, onRemove, onExp
           {layouts.map((l) => (
             <tr key={l.id} className={l.id === selectedId ? 'selrow' : ''} onClick={() => onSelect(l.id)}>
               <td><b>{l.name}</b><div className="muted">{l.origin}{l.note ? ` · ${l.note}` : ''}</div></td>
-              <td>{l.dims.join('×')}<div className="muted">{fuelName(l.fuelId)}</div></td>
+              <td>{l.dims.join('×')}<div className="muted">{(l.fuelIds?.length ? l.fuelIds : [l.fuelId]).map(fuelName).join(' + ')}</div></td>
               <td>{l.stats.stable ? <span className="ok">✓</span> : <span className="bad">✗</span>}</td>
               {COLS.map((c) => {
                 const v = c.get(l.stats, l);

@@ -1,6 +1,7 @@
 import type { BlockInfo, ReactorStats, SourcePlan } from '@ncopt/engine';
 import { fmt, pct } from '../model';
-import { clusterColor } from '../blocks';
+import { clusterColor, blockColor } from '../blocks';
+import { fuelBlock } from '@ncopt/engine';
 
 interface Props { stats: ReactorStats; blocks: BlockInfo[] | null; plan: SourcePlan | null; sourceName: string; fuelName: string; fuelBaseHeat: number; fuelBaseEff: number }
 
@@ -60,7 +61,7 @@ export default function StatsPanel({ stats: s, blocks, plan, sourceName, fuelNam
           : <Stat label="Hot coolant" value={`${fmt(Object.values(s.hotCoolant).reduce((a, b) => a + b, 0), 2)} mB/t`} sub={`speed ×${s.meanHeatingSpeedMultiplier.toFixed(3)}`} />}
         <Stat label="Mean efficiency" value={pct(s.meanEfficiency)} sub={`heat mult ×${s.meanHeatMult.toFixed(2)}`} />
         <Stat label="Raw heat / cooling" value={`${fmt(s.rawHeating)} / ${fmt(s.cooling)}`} sub={`margin ${margin >= 0 ? '+' : ''}${fmt(margin)} H/t`} tone={s.stable ? undefined : 'bad'} />
-        <Stat label="Fuel components" value={`${s.runningFuelComponents} / ${s.fuelComponents}`} sub={`base ${fuelBaseHeat} H/t · ${Math.round(fuelBaseEff * 100)}%`} tone={s.runningFuelComponents < s.fuelComponents ? 'warn' : undefined} />
+        <Stat label="Fuel components" value={`${s.runningFuelComponents} / ${s.fuelComponents}`} sub={s.fuelBreakdown && s.fuelBreakdown.length > 1 ? `${s.fuelBreakdown.filter((u) => u.producing > 0).length} of ${s.fuelBreakdown.length} fuels used` : `base ${fuelBaseHeat} H/t · ${Math.round(fuelBaseEff * 100)}%`} tone={s.runningFuelComponents < s.fuelComponents ? 'warn' : undefined} />
         <Stat label="Fuel use" value={`${fmt(s.fuelPerHour, 2)} ${s.fuelUnit}`} sub={sfr ? `${fmt(s.coolantInput, 1)} mB/t ${s.reactor === 'sfr' ? 'fluid in' : ''}` : undefined} />
         <Stat label="Sparsity" value={`×${s.sparsityEfficiencyMult.toFixed(3)}`} sub={`${pct(s.usefulPartRatio)} useful parts`} tone={s.sparsityEfficiencyMult < 1 ? 'warn' : undefined} />
         <Stat label="Components" value={`${s.validCoolers}/${s.coolers} coolers`} sub={`${s.activeModerators} active + ${s.passiveModerators} passive mods · ${s.activeReflectors} refl`} tone={s.validCoolers < s.coolers ? 'warn' : undefined} />
@@ -68,6 +69,21 @@ export default function StatsPanel({ stats: s, blocks, plan, sourceName, fuelNam
       {!sfr && Object.keys(s.hotCoolant).length > 0 && (
         <div className="hotc">{Object.entries(s.hotCoolant).map(([k, v]) => <span key={k}>{k}: <b>{fmt(v, 2)}</b> mB/t</span>)}</div>
       )}
+
+      {s.fuelBreakdown && s.fuelBreakdown.length > 1 && (<>
+        <h3>Fuels</h3>
+        <table className="tbl">
+          <thead><tr><th>Fuel</th><th>Running</th><th>Heat H/t</th><th>Use</th></tr></thead>
+          <tbody>
+            {s.fuelBreakdown.map((u, k) => (
+              <tr key={u.fuelId} className={u.producing === 0 ? 'warnrow' : ''}>
+                <td><i className="dot" style={{ background: blockColor(fuelBlock(k)) }} />{u.name}</td><td>{u.producing} / {u.placed}</td>
+                <td title={`raw ${fmt(u.rawHeating)} H/t`}>{fmt(u.effectiveHeating)}</td><td>{fmt(u.perHour, 1)} {s.fuelUnit}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </>)}
 
       <h3>Why it performs this way</h3>
       <ul className="insights">{ins.map((x, k) => <li key={k} className={x.tone}>{x.text}</li>)}</ul>

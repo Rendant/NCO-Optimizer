@@ -7,13 +7,15 @@ export interface LayoutJSON {
   version: 1;
   reactor: ReactorType;
   fuelId: string;
+  /** Multi-fuel layouts: fuel per slot (fuelIds[0] = fuelId); block "cell_2" / "vessel_2" holds fuelIds[1], etc. */
+  fuelIds?: string[];
   sfrCoolant?: string;
   dims: [number, number, number];
   /** blocks[z][y][x] as block keys */
   blocks: string[][][];
 }
 
-export function toLayoutJSON(grid: ArrayLike<number>, dims: [number, number, number], reactor: ReactorType, fuelId: string, sfrCoolant?: string): LayoutJSON {
+export function toLayoutJSON(grid: ArrayLike<number>, dims: [number, number, number], reactor: ReactorType, fuelId: string, sfrCoolant?: string, fuelIds?: string[]): LayoutJSON {
   const [X, Y, Z] = dims;
   const blocks: string[][][] = [];
   for (let z = 0; z < Z; z++) {
@@ -25,7 +27,8 @@ export function toLayoutJSON(grid: ArrayLike<number>, dims: [number, number, num
     }
     blocks.push(layer);
   }
-  return { format: 'ncopt-layout', version: 1, reactor, fuelId, sfrCoolant, dims, blocks };
+  const multi = fuelIds && fuelIds.length > 1 ? { fuelIds } : {};
+  return { format: 'ncopt-layout', version: 1, reactor, fuelId, ...multi, sfrCoolant, dims, blocks };
 }
 
 export function fromLayoutJSON(l: LayoutJSON): Uint8Array {

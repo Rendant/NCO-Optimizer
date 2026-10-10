@@ -10,7 +10,7 @@
  */
 import { Simulator, ReactorStats } from './simulator.js';
 import { FUELS, FuelDef, ReactorType, COOLER_NAMES, HEATER_NAMES, MODERATORS, REFLECTORS, COOLING_RATES, FISSION_CONFIG } from './components.js';
-import { AIR, FUEL, MOD0, REFL0, CONDUCTOR, COOLER0, isCooler, isModerator, isReflector } from './blocks.js';
+import { AIR, FUEL, MOD0, REFL0, CONDUCTOR, COOLER0, MAX_FUELS, isCooler, isModerator, isReflector, isFuel, fuelBlock } from './blocks.js';
 
 const ENV = (globalThis as any).process?.env ?? {};
 const PORTF = Number(ENV.PORTF ?? 8), PORT_FRAC = Number(ENV.PORT_FRAC ?? 0.6), REHEAT = Number(ENV.REHEAT ?? 0.3);
@@ -31,7 +31,15 @@ export type Objective = 'output' | 'efficiency' | 'balanced' | 'breeding';
 export interface OptimizeConfig {
   reactor: ReactorType;
   dims: [number, number, number];
+  /** Primary fuel (slot 0). */
   fuelId: string;
+  /**
+   * Multi-fuel: candidate fuels (fuelIds[0] = fuelId). The optimizer decides which fuel goes into each
+   * fuel component (slot k is block FUEL / FUELX0 + k - 1); fuels may end up unused unless requireAllFuels.
+   */
+  fuelIds?: string[];
+  /** Multi-fuel: every listed fuel must have at least one running component. */
+  requireAllFuels?: boolean;
   sfrCoolant?: string;
   objective: Objective;
   /** Allowed component ids: moderator ids, reflector ids, cooler names (sink/heater type names) */
@@ -97,11 +105,21 @@ export function resolveFuel(id: string): FuelDef {
   if (!f) throw new Error(`Unknown fuel "${id}"`);
   return f;
 }
+/** Fuel list of a config / layout (primary first, duplicates removed). */
+export function fuelList(c: { fuelId: string; fuelIds?: string[] }): string[] {
+  const ids = [c.fuelId, ...(c.fuelIds ?? [])].filter((x, k, a) => a.indexOf(x) === k);
+  if (ids.length > MAX_FUELS) throw new Error(`At most ${MAX_FUELS} fuels per layout`);
+  return ids;
+}
+export const resolveFuels = (c: { fuelId: string; fuelIds?: string[] }) => fuelList(c).map(resolveFuel);
 
 export class Optimizer {
   readonly cfg: OptimizeConfig;
   readonly sim: Simulator;
   readonly fuel: FuelDef;
+  readonly fuels: FuelDef[];
+  /** Fuel blocks of the fuel list (slot order). */
+  readonly fuelBlocks: number[];
   readonly rnd: () => number;
   readonly orbits: number[][];
   readonly orbitOf: Int32Array;
@@ -110,14 +128,18 @@ export class Optimizer {
   readonly allowedReflBlocks: number[];
   readonly allBlocks: number[];
   evaluations = 0;
+  readonly meanHeat: number;
   readonly allowedTypes: Int32Array;
   /** allowed cooler types, highest cooling rate first */
   readonly typesByRate: Int32Array;
 
   constructor(cfg: OptimizeConfig) {
     this.cfg = cfg;
-    this.fuel = resolveFuel(cfg.fuelId);
-    this.sim = new Simulator(cfg.dims, { reactor: cfg.reactor, fuel: this.fuel, sfrCoolant: cfg.sfrCoolant });
+    this.fuels = resolveFuels(cfg);
+    this.fuel = this.fuels[0];
+    this.fuelBlocks = this.fuels.map((_, k) => fuelBlock(k));
+    this.meanHeat = this.fuels.reduce((a, f) => a + f.heat, 0) / this.fuels.length;
+    this.sim = new Simulator(cfg.dims, { reactor: cfg.reactor, fuel: this.fuel, fuels: this.fuels, sfrCoolant: cfg.sfrCoolant });
     this.rnd = mulberry32(cfg.seed ?? (Math.random() * 2 ** 31) | 0);
     const names: readonly string[] = cfg.reactor === 'sfr' ? COOLER_NAMES : HEATER_NAMES;
     this.allowedCoolerBlocks = cfg.allowedCoolers.map((n) => {
@@ -134,7 +156,7 @@ export class Optimizer {
     this.allowedTypes = Int32Array.from(this.allowedCoolerBlocks.map((b) => b - COOLER0));
     this.typesByRate = Int32Array.from([...this.allowedTypes].sort((a, b) => COOLING_RATES[b] - COOLING_RATES[a]));
     if (this.allowedModBlocks.length === 0) throw new Error('At least one moderator must be allowed');
-    this.allBlocks = [AIR, FUEL, ...this.allowedModBlocks, ...this.allowedReflBlocks, ...(cfg.allowConductors ? [CONDUCTOR] : []), ...this.allowedCoolerBlocks];
+    this.allBlocks = [AIR, ...this.fuelBlocks, ...this.allowedModBlocks, ...this.allowedReflBlocks, ...(cfg.allowConductors ? [CONDUCTOR] : []), ...this.allowedCoolerBlocks];
     // symmetry orbits
     const { X, Y, Z } = this.sim;
     const sym = cfg.symmetry ?? {};
@@ -160,10 +182,10 @@ export class Optimizer {
       case 'breeding': {
         // fuel use at full cooling: running fuel components in producing clusters (= fuelPerHour × time / 72000 for
         // stable layouts). The undercooling lifetime factor is deliberately ignored — it would reward overheating.
+        // (multi-fuel: each component weighted by its own fuel's base heat)
         let n = 0;
-        const sfr = this.cfg.reactor === 'sfr';
-        for (const c of s.clusters) if (c.fuelCount > 0 && (!sfr || c.connectedToWall)) n += c.fuelCount;
-        return n * this.fuel.heat + s.effectiveHeating * BREED_W;
+        for (let k = 0; k < s.fuelBreakdown.length; k++) n += s.fuelBreakdown[k].producing * this.fuels[k].heat;
+        return n + s.effectiveHeating * BREED_W;
       }
       default: return s.effectiveHeating;
     }
@@ -171,6 +193,11 @@ export class Optimizer {
   constraintViolation(s: ReactorStats): number {
     let v = 0;
     if (this.cfg.maxFuel !== undefined && s.fuelComponents > this.cfg.maxFuel) v += (s.fuelComponents - this.cfg.maxFuel) / Math.max(1, this.cfg.maxFuel);
+    if (this.cfg.requireAllFuels && this.fuels.length > 1) {
+      let missing = 0;
+      for (const u of s.fuelBreakdown) if (u.producing === 0) missing++;
+      v += missing / this.fuels.length;
+    }
     if (this.cfg.minEfficiency !== undefined && s.runningFuelComponents > 0 && s.meanEfficiency < this.cfg.minEfficiency) v += (this.cfg.minEfficiency - s.meanEfficiency) / this.cfg.minEfficiency;
     return v;
   }
@@ -198,7 +225,7 @@ export class Optimizer {
         }
         progress += th > 0 ? Math.min(1, potential / th) * sim.bunchSize[b] : 0;
       }
-      const unit = this.cfg.objective === 'efficiency' ? 50 : this.fuel.heat * 0.25;
+      const unit = this.cfg.objective === 'efficiency' ? 50 : this.meanHeat * 0.25;
       f += this.shaping * unit * progress;
     }
     return f;
@@ -224,7 +251,7 @@ export class Optimizer {
       if (x < acc) {
         switch (k) {
           case 0: return AIR;
-          case 1: return FUEL;
+          case 1: return this.pick(this.fuelBlocks);
           case 2: return this.pick(this.allowedModBlocks);
           case 3: return this.pick(this.allowedReflBlocks);
           case 4: return CONDUCTOR;
@@ -270,7 +297,11 @@ export class Optimizer {
   }
 
   /** Constructive seed: a lattice of fuel components joined by straight moderator lines. */
-  latticeSeed(spacingIn?: number, modIn?: number): Uint8Array {
+  /**
+   * pattern (multi-fuel): slot index = single fuel everywhere; -1 = alternate fuels over the lattice
+   * (checkerboard by lattice coordinates); -2 = random fuel per lattice point.
+   */
+  latticeSeed(spacingIn?: number, modIn?: number, pattern = 0): Uint8Array {
     const { X, Y, Z, N } = this.sim;
     const grid = new Uint8Array(N);
     const spacing = spacingIn ?? 2 + Math.floor(this.rnd() * 4); // 1-4 moderators between fuel
@@ -282,7 +313,11 @@ export class Optimizer {
       const on = c.map((v, a) => (dims[a] === 1 ? true : (v - off[a] + spacing) % spacing === 0));
       const k = on.filter(Boolean).length;
       const i = this.sim.index(x, y, z);
-      if (k === 3) grid[i] = FUEL;
+      if (k === 3) {
+        const F = this.fuelBlocks.length;
+        const lc = c.reduce((a, v, ax) => a + Math.floor((v - off[ax] + spacing) / spacing), 0);
+        grid[i] = pattern >= 0 ? this.fuelBlocks[pattern % F] : pattern === -1 ? this.fuelBlocks[lc % F] : this.pick(this.fuelBlocks);
+      }
       else if (k === 2) grid[i] = mod;
     }
     this.symmetrize(grid);
@@ -291,7 +326,7 @@ export class Optimizer {
   }
   randomSeed(): Uint8Array {
     const grid = new Uint8Array(this.sim.N);
-    for (let o = 0; o < this.orbits.length; o++) this.setOrbit(grid, o, this.rnd() < 0.15 ? FUEL : this.rnd() < 0.4 ? this.pick(this.allowedModBlocks) : AIR);
+    for (let o = 0; o < this.orbits.length; o++) this.setOrbit(grid, o, this.rnd() < 0.15 ? this.pick(this.fuelBlocks) : this.rnd() < 0.4 ? this.pick(this.allowedModBlocks) : AIR);
     this.fillCoolers(grid);
     return grid;
   }
@@ -313,7 +348,13 @@ export class Optimizer {
       rankedSeeds.push(this.sanitize(Uint8Array.from(this.cfg.initial!)));
     } else {
       const seeds: Uint8Array[] = [];
-      for (const m of this.allowedModBlocks) for (let sp = 2; sp <= 5; sp++) for (let r = 0; r < 2; r++) seeds.push(this.latticeSeed(sp, m));
+      const F = this.fuelBlocks.length;
+      for (const m of this.allowedModBlocks) for (let sp = 2; sp <= 5; sp++) {
+        if (F === 1) { for (let r = 0; r < 2; r++) seeds.push(this.latticeSeed(sp, m)); continue; }
+        // multi-fuel: every fuel alone, alternating and random mixes
+        for (let k = 0; k < F; k++) seeds.push(this.latticeSeed(sp, m, k));
+        seeds.push(this.latticeSeed(sp, m, -1), this.latticeSeed(sp, m, -2));
+      }
       seeds.push(this.randomSeed(), this.randomSeed());
       for (const l of this.cfg.seedLayouts ?? []) if (l.length === this.sim.N) seeds.push(this.sanitize(Uint8Array.from(l)));
       const scored = seeds.map((g) => ({ g, f: this.evalGrid(g).fit })).sort((a, b) => b.f - a.f);
@@ -401,7 +442,8 @@ export class Optimizer {
         const i0 = this.orbits[o][0];
         const record = (orb: number) => { changed.push(orb); prevBlocks.push(cur[this.orbits[orb][0]]); };
         if (mv < P_RANDOM) {
-          const b = this.randomBlock();
+          // multi-fuel: half of the random moves on a fuel component swap its fuel for another listed fuel
+          const b = this.fuelBlocks.length > 1 && isFuel(cur[i0]) && this.rnd() < 0.5 ? this.pick(this.fuelBlocks) : this.randomBlock();
           if (b === cur[i0]) continue;
           record(o); this.setOrbit(cur, o, b);
         } else if (mv < P_SMART) {
@@ -553,7 +595,7 @@ export class Optimizer {
    */
   compoundPolish(g: Uint8Array, gs: { stats: ReactorStats; fit: number }, consider: (g: Uint8Array, s: ReactorStats, f: number) => void, timeUp: () => boolean, tick: () => void) {
     const O = this.orbits.length;
-    const structural = [AIR, FUEL, ...this.allowedModBlocks, ...this.allowedReflBlocks];
+    const structural = [AIR, ...this.fuelBlocks, ...this.allowedModBlocks, ...this.allowedReflBlocks];
     const changed: number[] = [], prev: number[] = [];
     const record = (orb: number) => { changed.push(orb); prev.push(g[this.orbits[orb][0]]); };
     let improved = true;
@@ -564,7 +606,7 @@ export class Optimizer {
         if (timeUp()) break;
         for (const b of structural) {
           const orig = g[this.orbits[o][0]];
-          if (b === orig || (b === AIR && !(orig === FUEL || isModerator(orig) || isReflector(orig)))) continue;
+          if (b === orig || (b === AIR && !(isFuel(orig) || isModerator(orig) || isReflector(orig)))) continue;
           changed.length = 0; prev.length = 0;
           record(o); this.setOrbit(g, o, b);
           let r = this.evalGrid(g);
@@ -680,7 +722,7 @@ export class Optimizer {
   lineMove(cur: Uint8Array, i: number, record: (orb: number) => void): boolean {
     const sim = this.sim;
     let start = i;
-    if (cur[start] !== FUEL) {
+    if (!isFuel(cur[start])) {
       // look for a nearby fuel component to anchor on, otherwise create one here
       if (this.rnd() < 0.7) {
         for (let k = 0; k < sim.fuelCount; k++) { if (this.rnd() < 1 / Math.max(1, sim.fuelCount - k)) { start = sim.fuelList[k]; break; } }
@@ -693,7 +735,9 @@ export class Optimizer {
     const path: number[] = [start];
     let p = start;
     for (let k = 0; k <= L; k++) { p = sim.nb[p * 6 + d]; if (p < 0) return false; path.push(p); }
-    const want = [FUEL, ...Array(L).fill(mod), toReflector ? this.pick(this.allowedReflBlocks) : FUEL];
+    const f0 = isFuel(cur[start]) ? cur[start] : this.pick(this.fuelBlocks);
+    const f1 = this.rnd() < 0.5 ? f0 : this.pick(this.fuelBlocks);
+    const want = [f0, ...Array(L).fill(mod), toReflector ? this.pick(this.allowedReflBlocks) : f1];
     const touched = new Set<number>();
     for (let k = 0; k < path.length; k++) {
       const o = this.orbitOf[path[k]];
@@ -708,7 +752,7 @@ export class Optimizer {
   isStructural(changed: number[], prevBlocks: number[], cur: Uint8Array): boolean {
     for (let k = 0; k < changed.length; k++) {
       const a = prevBlocks[k], b = cur[this.orbits[changed[k]][0]];
-      if (a === FUEL || b === FUEL || isModerator(a) || isModerator(b) || isReflector(a) || isReflector(b)) return true;
+      if (isFuel(a) || isFuel(b) || isModerator(a) || isModerator(b) || isReflector(a) || isReflector(b)) return true;
     }
     return false;
   }
@@ -741,7 +785,7 @@ export class Optimizer {
     for (let o = 0; o < this.orbits.length; o++) {
       this.sim.evaluate(grid);
       const i = this.orbits[o][0], b = grid[i];
-      const useless = (b === FUEL && !this.sim.running[i]) || (isCooler(b) && !this.sim.valid[i]) ||
+      const useless = (isFuel(b) && !this.sim.running[i]) || (isCooler(b) && !this.sim.valid[i]) ||
         (isModerator(b) && this.sim.modState[i] === 0) || (isReflector(b) && !this.sim.reflActive[i]) || (b === CONDUCTOR && this.sim.cluster[i] < 0);
       if (!useless) continue;
       this.setOrbit(grid, o, AIR);

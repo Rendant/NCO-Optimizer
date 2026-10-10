@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import type { Meta, OptimizeRequest } from '../api';
 import { blockColor } from '../blocks';
-import { COOLER0 } from '@ncopt/engine';
+import { COOLER0, MAX_FUELS, fuelBlock } from '@ncopt/engine';
 
 export interface Config extends OptimizeRequest { sourceType: string }
 
@@ -25,12 +25,24 @@ export default function ConfigPanel({ meta, cfg, setCfg, running, onStart, onCan
   const isotopes = useMemo(() => [...new Set(fuels.map((f) => f.isotope))], [fuels]);
   const coolers = cfg.reactor === 'sfr' ? meta.sinks : meta.heaters;
   const fuel = meta.fuels.find((f) => f.id === cfg.fuelId);
+  // multi-fuel: extra candidate fuels after the primary one (cfg.fuelIds = [primary, ...extra] when non-empty)
+  const extra = (cfg.fuelIds ?? []).filter((id) => id !== cfg.fuelId);
+  const setFuels = (primary: string, ex: string[]) => {
+    const list = ex.filter((id, k) => id !== primary && ex.indexOf(id) === k);
+    setCfg({ ...cfg, fuelId: primary, fuelIds: list.length ? [primary, ...list] : undefined });
+  };
+  const usable = fuels.filter((f) => f.intrinsicFlux === 0);
+  const fuelOptions = (exclude: string[]) => isotopes.map((iso) => (
+    <optgroup key={iso} label={iso}>
+      {usable.filter((f) => f.isotope === iso && !exclude.includes(f.id)).map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+    </optgroup>
+  ));
   const toggle = (list: string[], id: string) => (list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
 
   const switchReactor = (reactor: 'sfr' | 'msr') => {
     const f = meta.fuels.find((x) => x.reactor === reactor && x.isotope === (fuel?.isotope ?? 'LEU-235')) ?? meta.fuels.find((x) => x.reactor === reactor)!;
     const ids = (reactor === 'sfr' ? meta.sinks : meta.heaters).map((c) => c.id);
-    setCfg({ ...cfg, reactor, fuelId: f.id, allowedCoolers: ids });
+    setCfg({ ...cfg, reactor, fuelId: f.id, fuelIds: undefined, requireAllFuels: false, allowedCoolers: ids });
   };
 
   return (
@@ -48,15 +60,39 @@ export default function ConfigPanel({ meta, cfg, setCfg, running, onStart, onCan
         ))}
       </div>
       <label className="row">Fuel
-        <select value={cfg.fuelId} onChange={(e) => set('fuelId', e.target.value)} disabled={running}>
-          {isotopes.map((iso) => (
-            <optgroup key={iso} label={iso}>
-              {fuels.filter((f) => f.isotope === iso).map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
-            </optgroup>
-          ))}
+        <select value={cfg.fuelId} onChange={(e) => setFuels(e.target.value, extra)} disabled={running}>
+          {fuelOptions([])}
         </select>
       </label>
-      {fuel && (
+      {extra.length > 0 && (
+        <div className="fuellist">
+          {[cfg.fuelId, ...extra].map((id, k) => {
+            const f = meta.fuels.find((x) => x.id === id)!;
+            return (
+              <div key={id} className="fuelrow">
+                <i style={{ background: blockColor(fuelBlock(k)) }} />
+                <span className="fn">{f.name}</span>
+                <small>{f.heat} H/t · {Math.round(f.efficiency * 100)}% · crit {f.criticality}{f.selfPriming ? ' · self-priming' : ''}</small>
+                {k > 0 && <button className="x" disabled={running} title="Remove this fuel" onClick={() => setFuels(cfg.fuelId, extra.filter((x) => x !== id))}>×</button>}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {extra.length + 1 < MAX_FUELS && (
+        <label className="row">{extra.length ? 'Add another fuel' : 'Additional fuels (optimizer picks which goes where)'}
+          <select value="" onChange={(e) => e.target.value && setFuels(cfg.fuelId, [...extra, e.target.value])} disabled={running}>
+            <option value="">+ add fuel…</option>
+            {fuelOptions([cfg.fuelId, ...extra])}
+          </select>
+        </label>
+      )}
+      {extra.length > 0 && (
+        <div className="opts">
+          <label title="Otherwise the optimizer may leave out fuels that do not help the objective"><input type="checkbox" checked={!!cfg.requireAllFuels} disabled={running} onChange={() => set('requireAllFuels', !cfg.requireAllFuels)} />Use every listed fuel</label>
+        </div>
+      )}
+      {fuel && extra.length === 0 && (
         <div className="fuelinfo">
           <span>Heat <b>{fuel.heat}</b> H/t</span><span>Eff <b>{Math.round(fuel.efficiency * 100)}%</b></span>
           <span>Crit <b>{fuel.criticality}</b></span><span>Time <b>{fuel.time}</b> t</span>{fuel.selfPriming && <span className="tag">self-priming</span>}

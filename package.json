@@ -1,0 +1,20 @@
+{
+  "name": "ncopt",
+  "private": true,
+  "version": "1.0.0",
+  "description": "NuclearCraft: Overhauled fission reactor optimizer",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "test": "npm run test -w @ncopt/engine",
+    "typecheck": "tsc --noEmit -p apps/web",
+    "build": "npm run build -w @ncopt/web && npm run build -w @ncopt/server",
+    "start": "npm run build && node --enable-source-maps apps/server/dist/server.mjs",
+    "dev:server": "npm run dev -w @ncopt/server",
+    "dev:web": "npm run dev -w @ncopt/web",
+    "bench": "npm run bench -w @ncopt/engine"
+  }
+}

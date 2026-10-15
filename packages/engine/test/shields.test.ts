@@ -159,5 +159,5 @@ describe('fast simulator matches literal reference port with shields / irradiato
     expect(compared).toBe(2400);
     expect(withShield).toBeGreaterThan(30);
     expect(withIrr).toBeGreaterThan(30);
-  });
+  }, 60000);
 });

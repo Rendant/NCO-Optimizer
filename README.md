@@ -30,6 +30,10 @@ The optimizer searches for the best layout under your constraints and uses all C
 
 Requires [Node.js](https://nodejs.org/) 20 or newer.
 
+**Ready-to-run download:** grab the latest archive from [Releases](https://github.com/Rendant/NCO-Optimizer/releases), unpack it and run `start.bat` (Windows) or `./start.sh` (Linux / macOS), then open <http://localhost:8787>. No `npm install` needed: the server is bundled with its dependencies.
+
+**From source:**
+
 ```sh
 git clone https://github.com/Rendant/NCO-Optimizer.git ncopt
 cd ncopt
@@ -242,7 +246,10 @@ npm run dev:web      # Vite dev server on :5173, proxies /api to :8787
 npm test             # engine tests, incl. a fuzz test against a literal port of the Java control flow
 npm run typecheck    # TypeScript check of the web app and the engine
 npm run bench        # optimizer benchmark; pick a case with CASE=sfr5s|sfr7|sfr7s|tbu5s|msr5s
+npm run release:package   # build a self-contained release folder in release/
 ```
+
+Pushing a tag `vX.Y.Z` runs `.github/workflows/release.yml`: tests, typecheck, build, then publishes `ncopt-vX.Y.Z.zip` / `.tar.gz` as a GitHub release.
 
 ## Contributing
 

@@ -1,7 +1,7 @@
 {
   "name": "ncopt",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "license": "MIT",
   "description": "NuclearCraft: Overhauled fission reactor optimizer",
   "type": "module",
@@ -16,6 +16,7 @@
     "start": "npm run build && node --enable-source-maps apps/server/dist/server.mjs",
     "dev:server": "npm run dev -w @ncopt/server",
     "dev:web": "npm run dev -w @ncopt/web",
-    "bench": "npm run bench -w @ncopt/engine"
+    "bench": "npm run bench -w @ncopt/engine",
+    "release:package": "npm run build && node scripts/package-release.mjs"
   }
 }

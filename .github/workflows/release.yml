@@ -1,0 +1,35 @@
+# Pushing a tag such as v1.1.0 tests and builds the project and publishes a ready-to-run archive as a GitHub release.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run build
+      - run: node scripts/package-release.mjs "${{ github.ref_name }}"
+      - name: Create archives
+        working-directory: release
+        run: |
+          zip -qr "ncopt-${{ github.ref_name }}.zip" "ncopt-${{ github.ref_name }}"
+          tar -czf "ncopt-${{ github.ref_name }}.tar.gz" "ncopt-${{ github.ref_name }}"
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "${{ github.ref_name }}" release/*.zip release/*.tar.gz
+          --title "NC:O Fission Optimizer ${{ github.ref_name }}" --generate-notes

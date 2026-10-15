@@ -6,7 +6,8 @@ const COLORS = ['#38bdf8', '#f472b6', '#a3e635', '#fbbf24', '#c084fc', '#34d399'
 
 /** Best valid effective heating over time, one line per worker thread. */
 export default function ProgressChart({ job }: { job: JobSnapshot }) {
-  const breeding = job.cfg.objective === 'breeding';
+  const breeding = job.cfg.objective === 'breeding', irradiation = job.cfg.objective === 'irradiation';
+  const unit = breeding ? 'fuel/h' : irradiation ? 'irradiator flux' : 'H/t';
   const W = 300, H = 130, L = 40, B = 18, T = 6, R = 6;
   const series = job.workers.map((w) => (w.history ?? []).filter((p) => p[2]));
   const limit = Number(job.cfg.timeLimitMs ?? 1);
@@ -20,7 +21,7 @@ export default function ProgressChart({ job }: { job: JobSnapshot }) {
   const y = (v: number) => T + (H - T - B) * (1 - (v - lo) / (hi - lo));
   return (
     <div className="panel chart">
-      <h3>Search progress <span className="muted small">best stable {breeding ? 'fuel/h' : 'H/t'} per worker</span></h3>
+      <h3>Search progress <span className="muted small">best stable {unit} per worker</span></h3>
       <svg viewBox={`0 0 ${W} ${H}`} width="100%">
         <line x1={L} y1={H - B} x2={W - R} y2={H - B} stroke="#334155" />
         <line x1={L} y1={T} x2={L} y2={H - B} stroke="#334155" />
@@ -41,7 +42,7 @@ export default function ProgressChart({ job }: { job: JobSnapshot }) {
       </svg>
       <div className="chartlegend">
         {job.workers.map((w, k) => (
-          <span key={k} title={`seed ${w.seed} · ${w.phase}`}><i style={{ background: COLORS[k % COLORS.length] }} />#{k + 1} {w.bestValid ? (breeding ? fmt(s0(series[k]), 1) : fmt(w.effectiveHeating)) : '—'}</span>
+          <span key={k} title={`seed ${w.seed} · ${w.phase}`}><i style={{ background: COLORS[k % COLORS.length] }} />#{k + 1} {w.bestValid ? (breeding ? fmt(s0(series[k]), 1) : irradiation ? fmt(s0(series[k])) : fmt(w.effectiveHeating)) : '—'}</span>
         ))}
       </div>
       {(job.librarySeeds || job.libraryAdded) ? <p className="muted small">Library: {job.librarySeeds ?? 0} seed layout(s){job.status !== 'running' ? `, ${job.libraryAdded ?? 0} new entr${job.libraryAdded === 1 ? 'y' : 'ies'} saved` : ''}</p> : null}

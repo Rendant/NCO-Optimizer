@@ -5,7 +5,10 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { MODERATORS, REFLECTORS, COOLER_NAMES, HEATER_NAMES, MOD0, REFL0, CONDUCTOR, COOLER0, COOLER_END, AIR, isFuel, fuelSlot, fuelList, type OptimizeConfig, type ReactorStats } from '@ncopt/engine';
+import {
+  MODERATORS, REFLECTORS, SHIELDS, MOD0, REFL0, CONDUCTOR, COOLER0, COOLER_END, SHIELD0, IRRADIATOR, AIR, isFuel, isShield, fuelSlot, fuelList, coolerNames,
+  type OptimizeConfig, type ReactorStats,
+} from '@ncopt/engine';
 
 export interface LibraryEntry {
   id: string;
@@ -24,14 +27,19 @@ export interface LibraryEntry {
 
 const PER_KEY = 10;
 
-export function libraryKey(c: { reactor: string; dims: number[]; fuelId: string; fuelIds?: string[]; sfrCoolant?: string; objective: string }) {
-  // multi-fuel layouts are keyed by the whole fuel list (block -> fuel mapping depends on its order)
-  return [c.reactor, c.dims.join('x'), fuelList(c).join('+'), c.reactor === 'sfr' ? c.sfrCoolant ?? 'water' : '-', c.objective].join('|');
+export function libraryKey(c: Pick<OptimizeConfig, 'reactor' | 'dims' | 'fuelId' | 'fuelIds' | 'sfrCoolant' | 'objective' | 'allowIrradiators' | 'irradiatorRecipe' | 'decayMechanics' | 'controllable'>) {
+  // multi-fuel layouts are keyed by the whole fuel list (block -> fuel mapping depends on its order);
+  // settings that change the evaluation are appended only when they are not the defaults
+  const parts = [c.reactor, c.dims.join('x'), fuelList(c).join('+'), c.reactor === 'sfr' ? c.sfrCoolant ?? 'water' : '-', c.objective];
+  if (c.allowIrradiators || c.objective === 'irradiation') parts.push(`irr=${c.irradiatorRecipe ?? 'thorium'}`);
+  if (c.decayMechanics) parts.push('decay');
+  if (c.controllable) parts.push('controllable');
+  return parts.join('|');
 }
 
 /** True if every block of the layout is allowed by the configuration. */
 export function compatible(grid: number[], cfg: OptimizeConfig): boolean {
-  const names: readonly string[] = cfg.reactor === 'sfr' ? COOLER_NAMES : HEATER_NAMES;
+  const names = coolerNames(cfg.reactor);
   const nf = fuelList(cfg).length;
   for (const b of grid) {
     if (b === AIR) continue;
@@ -39,7 +47,9 @@ export function compatible(grid: number[], cfg: OptimizeConfig): boolean {
     if (b >= MOD0 && b < MOD0 + MODERATORS.length) { if (!cfg.allowedModerators.includes(MODERATORS[b - MOD0].id)) return false; continue; }
     if (b >= REFL0 && b < REFL0 + REFLECTORS.length) { if (!cfg.allowedReflectors.includes(REFLECTORS[b - REFL0].id)) return false; continue; }
     if (b === CONDUCTOR) { if (!cfg.allowConductors) return false; continue; }
-    if (b >= COOLER0 && b < COOLER_END) { if (!cfg.allowedCoolers.includes(names[b - COOLER0])) return false; continue; }
+    if (isShield(b)) { if (!(cfg.allowedShields ?? []).includes(SHIELDS[b - SHIELD0].id)) return false; continue; }
+    if (b === IRRADIATOR) { if (!cfg.allowIrradiators) return false; continue; }
+    if (b >= COOLER0 && b < COOLER_END) { if (!names[b - COOLER0] || !cfg.allowedCoolers.includes(names[b - COOLER0])) return false; continue; }
     return false;
   }
   return true;

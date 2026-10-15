@@ -16,6 +16,7 @@ describe('fuel data (NCConfig defaults)', () => {
     expect(fuel('lecf-249-oxide').selfPriming).toBe(true);
     expect(FUELS.filter((f) => f.reactor === 'sfr').length).toBe(81);
     expect(FUELS.filter((f) => f.reactor === 'msr').length).toBe(27);
+    expect(FUELS.filter((f) => f.reactor === 'pbr').length).toBe(27);
   });
 });
 

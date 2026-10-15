@@ -1,5 +1,8 @@
 /** Request validation for the HTTP API (kept explicit so errors are readable for the UI). */
-import { HX_TUBES, TURBINE_FLUIDS, TURBINE_BLADES, TURBINE_COILS, FUELS, MODERATORS, REFLECTORS, COOLER_NAMES, HEATER_NAMES, SFR_COOLANTS, SOURCES, NUM_BLOCKS, MAX_FUELS, type OptimizeConfig, type ReactorType } from '@ncopt/engine';
+import {
+  HX_TUBES, TURBINE_FLUIDS, TURBINE_BLADES, TURBINE_COILS, FUELS, MODERATORS, REFLECTORS, SHIELDS, IRRADIATOR_RECIPES, SFR_COOLANTS, SOURCES, MAX_FUELS,
+  coolerNames, isValidBlock, type OptimizeConfig, type ReactorType, type IrradiatorRecipeId,
+} from '@ncopt/engine';
 import os from 'node:os';
 
 export class BadRequest extends Error {}
@@ -12,9 +15,14 @@ export function parseDims(d: unknown): [number, number, number] {
   return dims;
 }
 
-export function parseBase(b: any): { reactor: ReactorType; dims: [number, number, number]; fuelId: string; fuelIds?: string[]; sfrCoolant?: string } {
+export interface BaseConfig {
+  reactor: ReactorType; dims: [number, number, number]; fuelId: string; fuelIds?: string[]; sfrCoolant?: string;
+  irradiatorRecipe: IrradiatorRecipeId; decayMechanics: boolean;
+}
+
+export function parseBase(b: any): BaseConfig {
   const reactor = b?.reactor;
-  if (reactor !== 'sfr' && reactor !== 'msr') fail('reactor must be "sfr" or "msr"');
+  if (reactor !== 'sfr' && reactor !== 'msr' && reactor !== 'pbr') fail('reactor must be "sfr", "msr" or "pbr"');
   const dims = parseDims(b.dims);
   const fuel = FUELS.find((f) => f.id === b.fuelId);
   if (!fuel) fail(`unknown fuel "${b.fuelId}"`);
@@ -31,19 +39,23 @@ export function parseBase(b: any): { reactor: ReactorType; dims: [number, number
       const f = FUELS.find((x) => x.id === id);
       if (!f) fail(`unknown fuel "${id}"`);
       if (f!.reactor !== reactor) fail(`fuel ${f!.name} is not a ${reactor.toUpperCase()} fuel`);
-      if (f!.intrinsicFlux !== 0) fail(`fuel ${f!.name} (intrinsic flux) is not supported`);
     }
     if (ids.length > 1) fuelIds = ids;
   }
-  return { reactor, dims, fuelId: b.fuelId, ...(fuelIds ? { fuelIds } : {}), sfrCoolant: reactor === 'sfr' ? sfrCoolant : undefined };
+  const irradiatorRecipe = b.irradiatorRecipe ?? 'thorium';
+  if (!IRRADIATOR_RECIPES.some((r) => r.id === irradiatorRecipe)) fail(`unknown irradiator recipe "${irradiatorRecipe}"`);
+  return {
+    reactor, dims, fuelId: b.fuelId, ...(fuelIds ? { fuelIds } : {}), sfrCoolant: reactor === 'sfr' ? sfrCoolant : undefined,
+    irradiatorRecipe, decayMechanics: !!b.decayMechanics,
+  };
 }
 
-export function parseGrid(g: unknown, n: number): Uint8Array {
+export function parseGrid(g: unknown, n: number, reactor: ReactorType): Uint8Array {
   if (!Array.isArray(g) || g.length !== n) fail(`grid must be an array of ${n} block ids`);
   const out = new Uint8Array(n);
   (g as unknown[]).forEach((v, i) => {
     const b = Number(v);
-    if (!Number.isInteger(b) || b < 0 || b >= NUM_BLOCKS) fail(`invalid block id at ${i}`);
+    if (!isValidBlock(b, reactor)) fail(`invalid block id at ${i}`);
     out[i] = b;
   });
   return out;
@@ -59,25 +71,32 @@ const subset = (v: unknown, allowed: readonly string[], what: string): string[] 
 export function parseOptimize(b: any): { cfg: OptimizeConfig; workers: number; options: { cooperate: boolean; useLibrary: boolean } } {
   const base = parseBase(b);
   const objective = b.objective ?? 'output';
-  if (!['output', 'efficiency', 'balanced', 'breeding'].includes(objective)) fail('objective must be output | efficiency | balanced | breeding');
-  const coolerIds = base.reactor === 'sfr' ? COOLER_NAMES : HEATER_NAMES;
+  if (!['output', 'efficiency', 'balanced', 'breeding', 'irradiation'].includes(objective)) fail('objective must be output | efficiency | balanced | breeding | irradiation');
   const cfg: OptimizeConfig = {
     ...base,
     objective,
     allowedModerators: subset(b.allowedModerators, MODERATORS.map((m) => m.id), 'moderator'),
     allowedReflectors: subset(b.allowedReflectors, REFLECTORS.map((m) => m.id), 'reflector'),
-    allowedCoolers: subset(b.allowedCoolers, coolerIds, 'cooler'),
+    allowedCoolers: subset(b.allowedCoolers, coolerNames(base.reactor), 'cooler'),
     allowConductors: !!b.allowConductors,
+    allowedShields: b.allowedShields === undefined ? [] : subset(b.allowedShields, SHIELDS.map((s) => s.id), 'shield'),
+    allowIrradiators: !!b.allowIrradiators || objective === 'irradiation',
+    controllable: !!b.controllable,
     symmetry: { x: !!b.symmetry?.x, y: !!b.symmetry?.y, z: !!b.symmetry?.z },
     timeLimitMs: Math.round(Math.min(600, Math.max(1, Number(b.timeLimitSec ?? 20))) * 1000),
   };
   if (!cfg.allowedModerators.length) fail('allow at least one moderator');
   if (!cfg.allowedCoolers.length) fail('allow at least one cooling component');
+  if (cfg.controllable && !cfg.allowedShields!.length) fail('a controllable reactor needs at least one allowed neutron shield');
   if (b.maxFuel != null && b.maxFuel !== '') { const m = Number(b.maxFuel); if (!Number.isInteger(m) || m < 1) fail('maxFuel must be a positive integer'); cfg.maxFuel = m; }
   if (b.minEfficiency != null && b.minEfficiency !== '') { const m = Number(b.minEfficiency); if (!(m >= 0)) fail('minEfficiency must be >= 0'); cfg.minEfficiency = m; }
+  if (b.minIrradiatorFlux != null && b.minIrradiatorFlux !== '') {
+    const m = Number(b.minIrradiatorFlux); if (!(m > 0)) fail('minIrradiatorFlux must be > 0');
+    cfg.minIrradiatorFlux = m; cfg.allowIrradiators = true;
+  }
   if (cfg.fuelIds && b.requireAllFuels) cfg.requireAllFuels = true;
   if (b.seed != null && b.seed !== '') cfg.seed = Number(b.seed) >>> 0;
-  if (b.initial != null) cfg.initial = Array.from(parseGrid(b.initial, base.dims[0] * base.dims[1] * base.dims[2]));
+  if (b.initial != null) cfg.initial = Array.from(parseGrid(b.initial, base.dims[0] * base.dims[1] * base.dims[2], base.reactor));
   const maxWorkers = Math.max(1, os.availableParallelism?.() ?? os.cpus().length);
   const workers = Math.min(maxWorkers, Math.max(1, Math.floor(Number(b.workers ?? maxWorkers))));
   return { cfg, workers, options: { cooperate: b.cooperate !== false, useLibrary: b.useLibrary !== false } };

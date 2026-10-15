@@ -1,14 +1,14 @@
-import type { BlockInfo } from '@ncopt/engine';
+import type { BlockInfo, ReactorType } from '@ncopt/engine';
 import { fmt, pct } from '../model';
 import { blockColor } from '../blocks';
 
-export default function Inspector({ info, onJump, air }: { info: BlockInfo | null; onJump: (pos: [number, number, number]) => void; air?: [number, number, number] }) {
+export default function Inspector({ info, onJump, air, reactor }: { info: BlockInfo | null; onJump: (pos: [number, number, number]) => void; air?: [number, number, number]; reactor: ReactorType }) {
   if (!info && air) return <div className="panel inspector"><b>Air</b> <span className="muted">({air.join(', ')})</span><p className="muted">Empty interior space. Air does not count as a functional part, so it contributes to the sparsity penalty when more than 25% of the interior is non-functional.</p></div>;
   if (!info) return <div className="panel inspector muted">Click a block in the 3D or layer view to see exactly how the simulator evaluated it.</div>;
   return (
     <div className="panel inspector">
       <div className="ihead">
-        <i style={{ background: blockColor(info.block) }} />
+        <i style={{ background: blockColor(info.block, reactor) }} />
         <div><b>{info.name}</b><div className="muted">({info.pos.join(', ')}) · {info.active ? <span className="ok">active</span> : <span className="bad">inactive</span>}{info.cluster >= 0 && ` · cluster ${info.cluster + 1}`}</div></div>
       </div>
       {info.fuel && (
@@ -32,7 +32,7 @@ export default function Inspector({ info, onJump, air }: { info: BlockInfo | nul
               <thead><tr><th>Dir</th><th>To</th><th>Len</th><th>Flux</th><th>Eff</th></tr></thead>
               <tbody>{info.fuel.lines.map((l, k) => (
                 <tr key={k} className={l.incoming ? '' : 'warnrow'}>
-                  <td>{l.dir}</td><td><a onClick={() => onJump(l.partner)}>{l.kind === 'reflector' ? 'reflector' : 'fuel'} ({l.partner.join(',')})</a></td>
+                  <td>{l.dir}</td><td><a onClick={() => onJump(l.partner)}>{l.kind}{l.intrinsic ? ' (intrinsic)' : ''} ({l.partner.join(',')})</a></td>
                   <td>{l.length}</td><td>{l.flux}</td><td>{l.efficiency.toFixed(3)}</td>
                 </tr>
               ))}</tbody>
@@ -47,6 +47,22 @@ export default function Inspector({ info, onJump, air }: { info: BlockInfo | nul
       )}
       {info.reflector && (
         <dl className="kv"><dt>Reflectivity</dt><dd>{info.reflector.reflectivity}</dd><dt>Efficiency</dt><dd>{info.reflector.efficiency}</dd></dl>
+      )}
+      {info.shield && (
+        <dl className="kv">
+          <dt>Status</dt><dd>{info.shield.functional ? 'in a complete moderator line' : info.shield.failed ? 'failed (blocks its lines)' : 'not in a complete line'}</dd>
+          <dt>Flux</dt><dd>{info.shield.flux}{info.shield.axes.length > 1 ? ` (${info.shield.axes.map((a) => `${a.axis} ${a.flux}`).join(' + ')})` : ''}</dd>
+          <dt>Heat</dt><dd>{fmt(info.shield.rawHeating)} H/t raw · {fmt(info.shield.effectiveHeating, 1)} effective ({info.shield.heatPerFlux} H/t per flux × {info.shield.efficiency})</dd>
+          <dt>Line efficiency</dt><dd>{info.shield.efficiency} (flux factor 0)</dd>
+        </dl>
+      )}
+      {info.irradiator && (
+        <dl className="kv">
+          <dt>Recipe</dt><dd>{info.irradiator.recipe}</dd>
+          <dt>Flux</dt><dd>{info.irradiator.flux} from {info.irradiator.lines} line(s)</dd>
+          <dt>Output</dt><dd>{fmt(info.irradiator.itemsPerHour, 2)} items/h</dd>
+          <dt>Line efficiency</dt><dd>×{info.irradiator.efficiency}</dd>
+        </dl>
       )}
       {info.cooler && (
         <>

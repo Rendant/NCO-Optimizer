@@ -9,8 +9,8 @@
  * neutronics phase, so cooler-only evaluations are cheaper than structural ones.
  */
 import { Simulator, ReactorStats } from './simulator.js';
-import { FUELS, FuelDef, ReactorType, COOLER_NAMES, HEATER_NAMES, MODERATORS, REFLECTORS, COOLING_RATES, FISSION_CONFIG } from './components.js';
-import { AIR, MOD0, REFL0, CONDUCTOR, COOLER0, MAX_FUELS, isCooler, isModerator, isReflector, isFuel, fuelBlock } from './blocks.js';
+import { FUELS, FuelDef, ReactorType, MODERATORS, REFLECTORS, SHIELDS, FISSION_CONFIG, IrradiatorRecipeId, coolerNames, coolingRates } from './components.js';
+import { AIR, MOD0, REFL0, CONDUCTOR, COOLER0, SHIELD0, IRRADIATOR, MAX_FUELS, isCooler, isModerator, isReflector, isFuel, isShield, isIrradiator, fuelBlock } from './blocks.js';
 
 const ENV = (globalThis as any).process?.env ?? {};
 const PORTF = Number(ENV.PORTF ?? 8), PORT_FRAC = Number(ENV.PORT_FRAC ?? 0.6), REHEAT = Number(ENV.REHEAT ?? 0.3);
@@ -25,8 +25,11 @@ const RACE = Number(ENV.RACE ?? 1), RACE_K = Number(ENV.RACE_K ?? 16), RACE_DECA
 const BREED_W = Number(ENV.BREED_W ?? 1e-4);
 const POLISH_FRAC = Number(ENV.POLISH_FRAC ?? 0.2), IMPROVE_T = Number(ENV.IMPROVE_T ?? 0.3);
 
-/** breeding = maximize fuel consumption rate (running, fully cooled fuel components) */
-export type Objective = 'output' | 'efficiency' | 'balanced' | 'breeding';
+/**
+ * breeding = maximize fuel consumption rate (running, fully cooled fuel components);
+ * irradiation = maximize the total neutron flux into irradiators
+ */
+export type Objective = 'output' | 'efficiency' | 'balanced' | 'breeding' | 'irradiation';
 
 export interface OptimizeConfig {
   reactor: ReactorType;
@@ -42,15 +45,25 @@ export interface OptimizeConfig {
   requireAllFuels?: boolean;
   sfrCoolant?: string;
   objective: Objective;
-  /** Allowed component ids: moderator ids, reflector ids, cooler names (sink/heater type names) */
+  /** Allowed component ids: moderator ids, reflector ids, cooler names (sink / heater / gas cooler type names), shield ids */
   allowedModerators: string[];
   allowedReflectors: string[];
   allowedCoolers: string[];
   allowConductors?: boolean;
+  allowedShields?: string[];
+  allowIrradiators?: boolean;
+  /** Recipe processed by the irradiators (default thorium → TBP) */
+  irradiatorRecipe?: IrradiatorRecipeId;
+  /** fission_decay_mechanics: criticality at the neutron-poison equilibrium */
+  decayMechanics?: boolean;
+  /** Every fuel component must stop when the neutron shields are switched on */
+  controllable?: boolean;
   /** Maximum number of fuel components placed */
   maxFuel?: number;
   /** Minimum mean efficiency (e.g. 1.5 = 150%) */
   minEfficiency?: number;
+  /** Minimum total irradiator flux */
+  minIrradiatorFlux?: number;
   symmetry?: { x?: boolean; y?: boolean; z?: boolean };
   timeLimitMs?: number;
   seed?: number;
@@ -126,12 +139,20 @@ export class Optimizer {
   readonly allowedCoolerBlocks: number[];
   readonly allowedModBlocks: number[];
   readonly allowedReflBlocks: number[];
+  readonly allowedShieldBlocks: number[];
+  /** [IRRADIATOR] if irradiators are allowed */
+  readonly irradiatorBlocks: number[];
   readonly allBlocks: number[];
   evaluations = 0;
   readonly meanHeat: number;
   readonly allowedTypes: Int32Array;
   /** allowed cooler types, highest cooling rate first */
   readonly typesByRate: Int32Array;
+  /** cooling rate per cooler type of this reactor */
+  readonly rates: readonly number[];
+  /** shields-on simulator for the controllability constraint */
+  private ctlSim: Simulator | null = null;
+  private ctlCache = new Map<number, number>();
 
   constructor(cfg: OptimizeConfig) {
     this.cfg = cfg;
@@ -139,9 +160,13 @@ export class Optimizer {
     this.fuel = this.fuels[0];
     this.fuelBlocks = this.fuels.map((_, k) => fuelBlock(k));
     this.meanHeat = this.fuels.reduce((a, f) => a + f.heat, 0) / this.fuels.length;
-    this.sim = new Simulator(cfg.dims, { reactor: cfg.reactor, fuel: this.fuel, fuels: this.fuels, sfrCoolant: cfg.sfrCoolant });
+    this.sim = new Simulator(cfg.dims, {
+      reactor: cfg.reactor, fuel: this.fuel, fuels: this.fuels, sfrCoolant: cfg.sfrCoolant,
+      irradiatorRecipe: cfg.irradiatorRecipe, decayMechanics: cfg.decayMechanics,
+    });
+    this.rates = coolingRates(cfg.reactor);
     this.rnd = mulberry32(cfg.seed ?? (Math.random() * 2 ** 31) | 0);
-    const names: readonly string[] = cfg.reactor === 'sfr' ? COOLER_NAMES : HEATER_NAMES;
+    const names = coolerNames(cfg.reactor);
     this.allowedCoolerBlocks = cfg.allowedCoolers.map((n) => {
       const k = names.indexOf(n);
       if (k < 0) throw new Error(`Unknown cooler "${n}"`);
@@ -153,10 +178,16 @@ export class Optimizer {
     this.allowedReflBlocks = cfg.allowedReflectors.map((m) => {
       const k = REFLECTORS.findIndex((x) => x.id === m); if (k < 0) throw new Error(`Unknown reflector "${m}"`); return REFL0 + k;
     });
+    this.allowedShieldBlocks = (cfg.allowedShields ?? []).map((m) => {
+      const k = SHIELDS.findIndex((x) => x.id === m); if (k < 0) throw new Error(`Unknown shield "${m}"`); return SHIELD0 + k;
+    });
+    this.irradiatorBlocks = cfg.allowIrradiators || cfg.objective === 'irradiation' ? [IRRADIATOR] : [];
     this.allowedTypes = Int32Array.from(this.allowedCoolerBlocks.map((b) => b - COOLER0));
-    this.typesByRate = Int32Array.from([...this.allowedTypes].sort((a, b) => COOLING_RATES[b] - COOLING_RATES[a]));
+    this.typesByRate = Int32Array.from([...this.allowedTypes].sort((a, b) => this.rates[b] - this.rates[a]));
     if (this.allowedModBlocks.length === 0) throw new Error('At least one moderator must be allowed');
-    this.allBlocks = [AIR, ...this.fuelBlocks, ...this.allowedModBlocks, ...this.allowedReflBlocks, ...(cfg.allowConductors ? [CONDUCTOR] : []), ...this.allowedCoolerBlocks];
+    if (cfg.controllable && this.allowedShieldBlocks.length === 0) throw new Error('A controllable reactor needs at least one allowed neutron shield');
+    this.allBlocks = [AIR, ...this.fuelBlocks, ...this.allowedModBlocks, ...this.allowedReflBlocks, ...this.allowedShieldBlocks, ...this.irradiatorBlocks,
+      ...(cfg.allowConductors ? [CONDUCTOR] : []), ...this.allowedCoolerBlocks];
     // symmetry orbits
     const { X, Y, Z } = this.sim;
     const sym = cfg.symmetry ?? {};
@@ -187,6 +218,8 @@ export class Optimizer {
         for (let k = 0; k < s.fuelBreakdown.length; k++) n += s.fuelBreakdown[k].producing * this.fuels[k].heat;
         return n + s.effectiveHeating * BREED_W;
       }
+      // irradiator flux; effective heat breaks ties
+      case 'irradiation': return s.irradiatorFlux + s.effectiveHeating * BREED_W;
       default: return s.effectiveHeating;
     }
   }
@@ -199,7 +232,32 @@ export class Optimizer {
       v += missing / this.fuels.length;
     }
     if (this.cfg.minEfficiency !== undefined && s.runningFuelComponents > 0 && s.meanEfficiency < this.cfg.minEfficiency) v += (this.cfg.minEfficiency - s.meanEfficiency) / this.cfg.minEfficiency;
+    if (this.cfg.minIrradiatorFlux !== undefined && s.irradiatorFlux < this.cfg.minIrradiatorFlux) v += (this.cfg.minIrradiatorFlux - s.irradiatorFlux) / this.cfg.minIrradiatorFlux;
+    if (this.cfg.controllable && s.runningFuelComponents > 0) v += (s.shutdownRunning ?? 0) / s.fuelComponents;
     return v;
+  }
+  /**
+   * Fuel components still running in the simulator's current layout with every shield shielding (cached per neutronics
+   * state: it only depends on fuel, moderators, reflectors, shields and irradiators).
+   */
+  shutdownRunning(): number {
+    const sim = this.sim, key = sim.neutronVersion;
+    const hit = this.ctlCache.get(key);
+    if (hit !== undefined) return hit;
+    const ctl = (this.ctlSim ??= new Simulator(this.cfg.dims, { ...sim.opts, shieldsOn: true, primed: [] }));
+    const primed: { index: number; efficiency: number }[] = [];
+    for (let k = 0; k < sim.fuelCount; k++) { const i = sim.fuelList[k]; if (sim.running[i]) primed.push({ index: i, efficiency: 1 }); }
+    ctl.opts.primed = primed;
+    const n = primed.length ? ctl.evaluate(sim.grid).runningFuelComponents : 0;
+    if (this.ctlCache.size > 64) this.ctlCache.clear();
+    this.ctlCache.set(key, n);
+    return n;
+  }
+  /** Simulates the grid; annotates the stats with the shutdown check when the controllability constraint is on. */
+  evaluate(grid: Uint8Array): ReactorStats {
+    const s = this.sim.evaluate(grid);
+    if (this.cfg.controllable) s.shutdownRunning = this.shutdownRunning();
+    return s;
   }
   isValid(s: ReactorStats) {
     return s.excessHeat <= 0 && this.constraintViolation(s) <= 0 && s.runningFuelComponents > 0;
@@ -225,14 +283,14 @@ export class Optimizer {
         }
         progress += th > 0 ? Math.min(1, potential / th) * sim.bunchSize[b] : 0;
       }
-      const unit = this.cfg.objective === 'efficiency' ? 50 : this.meanHeat * 0.25;
+      const unit = this.cfg.objective === 'efficiency' ? 50 : this.cfg.objective === 'irradiation' ? 20 : this.meanHeat * 0.25;
       f += this.shaping * unit * progress;
     }
     return f;
   }
   evalGrid(grid: Uint8Array): { stats: ReactorStats; fit: number } {
     this.evaluations++;
-    const stats = this.sim.evaluate(grid);
+    const stats = this.evaluate(grid);
     return { stats, fit: this.fitness(stats) };
   }
 
@@ -242,7 +300,8 @@ export class Optimizer {
   randomBlock(): number {
     const r = this.rnd();
     const hasRefl = this.allowedReflBlocks.length > 0, hasCond = !!this.cfg.allowConductors, hasCool = this.allowedCoolerBlocks.length > 0;
-    const w = [0.07, 0.14, 0.24, hasRefl ? 0.07 : 0, hasCond ? 0.02 : 0, hasCool ? 0.46 : 0];
+    const hasShield = this.allowedShieldBlocks.length > 0, hasIrr = this.irradiatorBlocks.length > 0;
+    const w = [0.07, 0.14, 0.24, hasRefl ? 0.07 : 0, hasCond ? 0.02 : 0, hasCool ? 0.46 : 0, hasShield ? 0.04 : 0, hasIrr ? 0.05 : 0];
     const total = w.reduce((a, b) => a + b, 0);
     let acc = 0;
     const x = r * total;
@@ -255,7 +314,9 @@ export class Optimizer {
           case 2: return this.pick(this.allowedModBlocks);
           case 3: return this.pick(this.allowedReflBlocks);
           case 4: return CONDUCTOR;
-          default: return this.pick(this.allowedCoolerBlocks);
+          case 5: return this.pick(this.allowedCoolerBlocks);
+          case 6: return this.pick(this.allowedShieldBlocks);
+          default: return IRRADIATOR;
         }
       }
     }
@@ -273,7 +334,7 @@ export class Optimizer {
   smartCooler(i: number, preferHigh: boolean): number {
     const v = this.validCoolersAt(i);
     if (v.length === 0) return this.allowedCoolerBlocks.length && this.rnd() < 0.5 ? this.pick(this.allowedCoolerBlocks) : AIR;
-    if (preferHigh) return v.reduce((a, b) => (COOLING_RATES[b - COOLER0] > COOLING_RATES[a - COOLER0] ? b : a));
+    if (preferHigh) return v.reduce((a, b) => (this.rates[b - COOLER0] > this.rates[a - COOLER0] ? b : a));
     return this.pick(v);
   }
   /** Repeatedly fills air / invalid coolers with the best valid cooler. */
@@ -287,7 +348,7 @@ export class Optimizer {
         if (b === AIR || (isCooler(b) && !this.sim.valid[i])) {
           const v = this.validCoolersAt(i);
           if (v.length) {
-            const best = v.reduce((a, c) => (COOLING_RATES[c - COOLER0] > COOLING_RATES[a - COOLER0] ? c : a));
+            const best = v.reduce((a, c) => (this.rates[c - COOLER0] > this.rates[a - COOLER0] ? c : a));
             if (best !== b) { this.setOrbit(grid, o, best); changed = true; }
           }
         }
@@ -299,9 +360,10 @@ export class Optimizer {
   /** Constructive seed: a lattice of fuel components joined by straight moderator lines. */
   /**
    * pattern (multi-fuel): slot index = single fuel everywhere; -1 = alternate fuels over the lattice
-   * (checkerboard by lattice coordinates); -2 = random fuel per lattice point.
+   * (checkerboard by lattice coordinates); -2 = random fuel per lattice point; -3 = primary fuel alternating with
+   * irradiators.
    */
-  latticeSeed(spacingIn?: number, modIn?: number, pattern = 0): Uint8Array {
+  latticeSeed(spacingIn?: number, modIn?: number, pattern = 0, shield = AIR): Uint8Array {
     const { X, Y, Z, N } = this.sim;
     const grid = new Uint8Array(N);
     const spacing = spacingIn ?? 2 + Math.floor(this.rnd() * 4); // 1-4 moderators between fuel
@@ -316,9 +378,13 @@ export class Optimizer {
       if (k === 3) {
         const F = this.fuelBlocks.length;
         const lc = c.reduce((a, v, ax) => a + Math.floor((v - off[ax] + spacing) / spacing), 0);
-        grid[i] = pattern >= 0 ? this.fuelBlocks[pattern % F] : pattern === -1 ? this.fuelBlocks[lc % F] : this.pick(this.fuelBlocks);
+        grid[i] = pattern >= 0 ? this.fuelBlocks[pattern % F] : pattern === -1 ? this.fuelBlocks[lc % F] : pattern === -3 ? (lc % 2 ? IRRADIATOR : this.fuelBlocks[0]) : this.pick(this.fuelBlocks);
       }
-      else if (k === 2) grid[i] = mod;
+      else if (k === 2) {
+        // shield variant: the middle block of every line between lattice points (spacing >= 3 keeps a moderator)
+        const a = on.indexOf(false);
+        grid[i] = shield !== AIR && (c[a] - off[a] + spacing) % spacing === Math.floor(spacing / 2) ? shield : mod;
+      }
     }
     this.symmetrize(grid);
     this.fillCoolers(grid);
@@ -355,6 +421,8 @@ export class Optimizer {
         for (let k = 0; k < F; k++) seeds.push(this.latticeSeed(sp, m, k));
         seeds.push(this.latticeSeed(sp, m, -1), this.latticeSeed(sp, m, -2));
       }
+      if (this.irradiatorBlocks.length && this.cfg.objective === 'irradiation') for (const m of this.allowedModBlocks) for (let sp = 2; sp <= 4; sp++) seeds.push(this.latticeSeed(sp, m, -3));
+      if (this.cfg.controllable) for (const m of this.allowedModBlocks) for (let sp = 3; sp <= 5; sp++) seeds.push(this.latticeSeed(sp, m, 0, this.pick(this.allowedShieldBlocks)));
       seeds.push(this.randomSeed(), this.randomSeed());
       for (const l of this.cfg.seedLayouts ?? []) if (l.length === this.sim.N) seeds.push(this.sanitize(Uint8Array.from(l)));
       const scored = seeds.map((g) => ({ g, f: this.evalGrid(g).fit })).sort((a, b) => b.f - a.f);
@@ -434,7 +502,7 @@ export class Optimizer {
         T = T0 * tScale * Math.pow(1e-4, cp);
         this.lambda = 0.4 + 6 * cp * cp;
         this.shaping = Math.max(0, 1 - 1.5 * cp);
-        if ((iter & 1023) === 0) { curFit = this.fitness(this.sim.evaluate(cur)); this.evaluations++; }
+        if ((iter & 1023) === 0) { curFit = this.fitness(this.evaluate(cur)); this.evaluations++; }
         // ---- propose
         changed.length = 0; prevBlocks.length = 0;
         const mv = this.rnd();
@@ -595,7 +663,7 @@ export class Optimizer {
    */
   compoundPolish(g: Uint8Array, gs: { stats: ReactorStats; fit: number }, consider: (g: Uint8Array, s: ReactorStats, f: number) => void, timeUp: () => boolean, tick: () => void) {
     const O = this.orbits.length;
-    const structural = [AIR, ...this.fuelBlocks, ...this.allowedModBlocks, ...this.allowedReflBlocks];
+    const structural = [AIR, ...this.fuelBlocks, ...this.allowedModBlocks, ...this.allowedReflBlocks, ...this.allowedShieldBlocks, ...this.irradiatorBlocks];
     const changed: number[] = [], prev: number[] = [];
     const record = (orb: number) => { changed.push(orb); prev.push(g[this.orbits[orb][0]]); };
     let improved = true;
@@ -606,7 +674,7 @@ export class Optimizer {
         if (timeUp()) break;
         for (const b of structural) {
           const orig = g[this.orbits[o][0]];
-          if (b === orig || (b === AIR && !(isFuel(orig) || isModerator(orig) || isReflector(orig)))) continue;
+          if (b === orig || (b === AIR && !isNeutronic(orig))) continue;
           changed.length = 0; prev.length = 0;
           record(o); this.setOrbit(g, o, b);
           let r = this.evalGrid(g);
@@ -703,9 +771,9 @@ export class Optimizer {
           const o = this.orbitOf[i];
           if (this.orbits[o][0] !== i && sim.cluster[this.orbits[o][0]] === c.id) continue; // handle each orbit once
           const mult = this.orbits[o].filter((j) => sim.cluster[j] === c.id).length;
-          const rate = COOLING_RATES[b - COOLER0];
+          const rate = this.rates[b - COOLER0];
           for (const nb of [AIR, ...this.validCoolersAt(i)]) {
-            const r2 = nb === AIR ? 0 : COOLING_RATES[nb - COOLER0];
+            const r2 = nb === AIR ? 0 : this.rates[nb - COOLER0];
             const red = (rate - r2) * mult;
             if (red > bestRed && red <= surplus) { bestRed = red; bestO = o; bestB = nb; }
           }
@@ -729,7 +797,11 @@ export class Optimizer {
       }
     }
     const d = Math.floor(this.rnd() * 6);
-    const toReflector = this.allowedReflBlocks.length > 0 && this.rnd() < 0.3;
+    // line end: irradiator, reflector (at most reach / 2 moderators) or another fuel component
+    const pIrr = this.irradiatorBlocks.length ? (this.cfg.objective === 'irradiation' ? 0.5 : 0.15) : 0;
+    const r = this.rnd();
+    const toIrradiator = r < pIrr;
+    const toReflector = !toIrradiator && this.allowedReflBlocks.length > 0 && r < pIrr + 0.3 * (1 - pIrr);
     const L = 1 + Math.floor(this.rnd() * (toReflector ? 2 : 4));
     const mod = this.pick(this.allowedModBlocks);
     const path: number[] = [start];
@@ -737,7 +809,9 @@ export class Optimizer {
     for (let k = 0; k <= L; k++) { p = sim.nb[p * 6 + d]; if (p < 0) return false; path.push(p); }
     const f0 = isFuel(cur[start]) ? cur[start] : this.pick(this.fuelBlocks);
     const f1 = this.rnd() < 0.5 ? f0 : this.pick(this.fuelBlocks);
-    const want = [f0, ...Array(L).fill(mod), toReflector ? this.pick(this.allowedReflBlocks) : f1];
+    const want = [f0, ...Array(L).fill(mod), toIrradiator ? IRRADIATOR : toReflector ? this.pick(this.allowedReflBlocks) : f1];
+    // neutron shield in the line (needed to make the reactor controllable)
+    if (this.allowedShieldBlocks.length && this.rnd() < (this.cfg.controllable ? 0.5 : 0.2)) want[1 + Math.floor(this.rnd() * L)] = this.pick(this.allowedShieldBlocks);
     const touched = new Set<number>();
     for (let k = 0; k < path.length; k++) {
       const o = this.orbitOf[path[k]];
@@ -748,11 +822,11 @@ export class Optimizer {
     return touched.size > 0;
   }
 
-  /** True if the proposal touched fuel, moderators or reflectors (before or after). */
+  /** True if the proposal touched fuel, moderators, reflectors, shields or irradiators (before or after). */
   isStructural(changed: number[], prevBlocks: number[], cur: Uint8Array): boolean {
     for (let k = 0; k < changed.length; k++) {
       const a = prevBlocks[k], b = cur[this.orbits[changed[k]][0]];
-      if (isFuel(a) || isFuel(b) || isModerator(a) || isModerator(b) || isReflector(a) || isReflector(b)) return true;
+      if (isNeutronic(a) || isNeutronic(b)) return true;
     }
     return false;
   }
@@ -774,7 +848,7 @@ export class Optimizer {
       const best = this.bestCoolerAt(i);
       if (best < 0 || best === b) continue;
       record(o); this.setOrbit(cur, o, best); any = true;
-      need -= COOLING_RATES[best - COOLER0] * this.orbits[o].length;
+      need -= this.rates[best - COOLER0] * this.orbits[o].length;
     }
     return any;
   }
@@ -786,7 +860,8 @@ export class Optimizer {
       this.sim.evaluate(grid);
       const i = this.orbits[o][0], b = grid[i];
       const useless = (isFuel(b) && !this.sim.running[i]) || (isCooler(b) && !this.sim.valid[i]) ||
-        (isModerator(b) && this.sim.modState[i] === 0) || (isReflector(b) && !this.sim.reflActive[i]) || (b === CONDUCTOR && this.sim.cluster[i] < 0);
+        (isModerator(b) && this.sim.modState[i] === 0) || (isReflector(b) && !this.sim.reflActive[i]) || (b === CONDUCTOR && this.sim.cluster[i] < 0) ||
+        (isShield(b) && !this.sim.shieldFunc[i]) || (isIrradiator(b) && !(this.sim.irrFlux[i] > 0));
       if (!useless) continue;
       this.setOrbit(grid, o, AIR);
       const r = this.evalGrid(grid);
@@ -794,6 +869,9 @@ export class Optimizer {
     }
   }
 }
+
+/** Blocks that take part in the neutronics (structural moves). */
+const isNeutronic = (b: number) => isFuel(b) || isModerator(b) || isReflector(b) || isShield(b) || isIrradiator(b);
 
 export function optimize(cfg: OptimizeConfig, onProgress?: (p: Progress) => void, shouldStop?: () => boolean, hooks?: OptimizeHooks): OptimizeResult {
   return new Optimizer(cfg).run(onProgress, shouldStop, hooks);

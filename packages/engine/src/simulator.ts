@@ -1,20 +1,25 @@
 /**
- * Steady-state simulator for NuclearCraft: Overhauled fission reactors (solid-fuel & molten-salt).
+ * Steady-state simulator for NuclearCraft: Overhauled fission reactors (solid-fuel, molten-salt and pebble-bed).
  *
  * Mirrors the refresh pipeline of nc/multiblock/fission/FissionReactorLogic.java:
  *   refreshFlux()      -> priming, moderator-line flux distribution, criticality (IFissionFuelComponent.defaultDistributeFlux)
  *   refreshClusters()  -> active/passive moderators, cooling component placement rules, cluster search
- *   refreshClusterStats / refreshReactorStats (SolidFuelFissionLogic / MoltenSaltFissionLogic)
+ *   refreshClusterStats / refreshReactorStats (SolidFuelFissionLogic / MoltenSaltFissionLogic / PebbleBedFissionLogic)
  * with steady-state (fixed point) semantics instead of tick order.
  */
-import { FISSION_CONFIG, FuelDef, MODERATORS, REFLECTORS, ReactorType, SINK_RULES, HEATER_RULES, COOLING_RATES, SFR_COOLANTS, HEATER_COOLANTS } from './components.js';
-import { MOD0, REFL0, CONDUCTOR, COOLER0, COOLER_END, NUM_BLOCKS, FUELX0, MAX_FUELS, isModerator, isReflector, isFuel, fuelSlot } from './blocks.js';
+import {
+  FISSION_CONFIG, FuelDef, MODERATORS, REFLECTORS, SHIELDS, IRRADIATOR_RECIPES, DECAY_CONFIG, ReactorType, IrradiatorRecipeId,
+  SFR_COOLANTS, HEATER_COOLANTS, GAS_COOLANTS, coolerRules, coolingRates,
+} from './components.js';
+import { MOD0, REFL0, CONDUCTOR, COOLER0, COOLER_END, NUM_BLOCKS, MAX_FUELS, SHIELD0, isModerator, isReflector, isFuel, isShield, isIrradiator, isValidBlock, fuelSlot } from './blocks.js';
 
-/** Blocks that take part in neutronics (fuel, moderators, reflectors). Everything else is equivalent for flux. */
+/** Blocks that take part in neutronics (fuel, moderators, reflectors, shields, irradiators). Everything else is equivalent for flux. */
 const NEUTRONIC = new Uint8Array(NUM_BLOCKS);
-for (let b = 0; b < NUM_BLOCKS; b++) NEUTRONIC[b] = isFuel(b) || isModerator(b) || isReflector(b) ? 1 : 0;
+for (let b = 0; b < NUM_BLOCKS; b++) NEUTRONIC[b] = isFuel(b) || isModerator(b) || isReflector(b) || isShield(b) || isIrradiator(b) ? 1 : 0;
 const isCoolB = (b: number) => b >= COOLER0 && b < COOLER_END;
-const TARGET_CODE: Record<string, number> = { casing: 0, conductor: 1, moderator: 2, reflector: 3, fuel: 4, cooler: 5, unsupported: 6 };
+const TARGET_CODE: Record<string, number> = { casing: 0, conductor: 1, moderator: 2, reflector: 3, fuel: 4, cooler: 5, unsupported: 6, shield: 7, irradiator: 8 };
+/** Moderator line kinds (lineType): none, ends at a fuel component, at a reflector, at an irradiator. */
+export const LINE_NONE = 0, LINE_FUEL = 1, LINE_REFLECTOR = 2, LINE_IRRADIATOR = 3;
 import { PlacementRule, parseRule, adjacentSatisfied } from './rules.js';
 
 /** EnumFacing order: DOWN, UP, NORTH, SOUTH, WEST, EAST */
@@ -39,6 +44,17 @@ export interface SimOptions {
    * (the usual planner assumption; use `planSources` for a concrete source layout).
    */
   primed?: { index: number; efficiency: number }[];
+  /** Recipe processed by every neutron irradiator (default thorium → TBP). */
+  irradiatorRecipe?: IrradiatorRecipeId;
+  /** Neutron shields are shielding (shield manager on): moderator lines through them are blocked. Default: off (reactor running). */
+  shieldsOn?: boolean;
+  /** fission_decay_mechanics: criticality includes the neutron poison fraction. */
+  decayMechanics?: boolean;
+  /**
+   * With decayMechanics: poison fraction as a multiple of the fuel's decay factor. Default: the running
+   * equilibrium (fission_decay_equilibrium_factors[2]); 0 = fresh fuel at start-up.
+   */
+  poisonLevel?: number;
 }
 
 export interface ClusterStats {
@@ -56,7 +72,7 @@ export interface ClusterStats {
   meanEfficiency: number;
   overcoolingEfficiencyFactor: number;
   undercoolingLifetimeFactor: number;
-  /** MSR only: heater heating-speed multiplier for this cluster */
+  /** MSR / PBR only: heater / gas cooler heating-speed multiplier for this cluster */
   heatingSpeedMultiplier: number;
 }
 
@@ -90,19 +106,32 @@ export interface ReactorStats {
   /** Clusters containing running fuel that do not touch the casing (SFR: produce nothing) */
   disconnectedFuelClusters: number;
   stable: boolean;
-  /** SFR: coolant in / steam out (mB/t) and ideal turbine RF/t */
+  /** SFR: coolant in / steam out (mB/t) and ideal turbine RF/t; PBR: hot gas out and ideal turbine RF/t */
   coolantInput: number;
   outputFluid: number;
   outputFluidName: string;
   rfPerTick: number;
-  /** Fuel consumption: SFR ingots per hour, MSR mB per hour */
+  /** Fuel consumption: SFR / PBR ingots per hour, MSR mB per hour */
   fuelPerHour: number;
   fuelUnit: string;
   /** Per fuel (layout fuel slot order): placed / running components, consumption and heat. */
   fuelBreakdown: FuelUsage[];
-  /** MSR: hot coolant output per heater coolant (mB/t) */
+  /** MSR: hot coolant output per heater coolant; PBR: hot gas output per gas cooler (mB/t) */
   hotCoolant: Record<string, number>;
   meanHeatingSpeedMultiplier: number;
+  /** Neutron shields placed / in a complete moderator line, and their heating (raw H/t, effective H/t before sparsity) */
+  shields: number;
+  activeShields: number;
+  shieldRawHeating: number;
+  shieldEffectiveHeating: number;
+  /** Neutron irradiators placed / receiving flux, total irradiator flux and items processed per hour */
+  irradiators: number;
+  activeIrradiators: number;
+  irradiatorFlux: number;
+  irradiatorRecipe: IrradiatorRecipeId;
+  irradiatorItemsPerHour: number;
+  /** Fuel components still running with every shield shielding (set by the optimizer's controllability check) */
+  shutdownRunning?: number;
   clusters: ClusterStats[];
 }
 
@@ -113,19 +142,22 @@ export interface FuelUsage {
   running: number;
   /** Running components in producing clusters (SFR: wall-connected) */
   producing: number;
-  /** SFR ingots/h, MSR mB/h */
+  /** SFR / PBR ingots/h, MSR mB/h */
   perHour: number;
   rawHeating: number;
   effectiveHeating: number;
 }
 
 interface NeutronSlot {
-  sig: Uint8Array; ready: boolean; primed: SimOptions['primed']; fuelCount: number; bunchCount: number; version: number;
+  sig: Uint8Array; ready: boolean; primed: SimOptions['primed']; fuelCount: number; bunchCount: number; specialCount: number; version: number;
   fuelList: Int32Array; bunchOf: Int32Array; bunchSize: Int32Array; bunchOpenFaces: Int32Array; bunchFlux: Float64Array;
   bunchPrimed: Uint8Array; bunchEmit: Uint8Array; memberList: Int32Array; memberStart: Int32Array;
-  lineType: Uint8Array; lineTarget: Int32Array; lineFlux: Float64Array; lineEff: Float64Array; lineLen: Uint8Array;
+  lineType: Uint8Array; lineTarget: Int32Array; lineFlux: Float64Array; lineEff: Float64Array; lineLen: Uint8Array; lineShield: Uint8Array;
   running: Uint8Array; flux: Float64Array; heatMult: Int32Array; inEff: Float64Array; inFlux: Float64Array; inSet: Uint8Array;
   modState: Uint8Array; reflActive: Uint8Array; srcEff: Float64Array; bunchRaw: Float64Array; bunchEff: Float64Array; bunchBase: Float64Array; nCounts: Int32Array;
+  specialList: Int32Array; shieldAxis: Float64Array; shieldFunc: Uint8Array; irrFlux: Float64Array; shieldFail: Uint8Array; anyShieldFail: boolean;
+  /** the shield / irradiator buffers may hold non-zero values */
+  specialDirty: boolean;
 }
 
 export class Simulator {
@@ -152,13 +184,36 @@ export class Simulator {
   /** Neutronics-only counts: active moderators, passive moderators, active reflectors. */
   private nCounts: Int32Array = new Int32Array(3);
   memberList: Int32Array; memberStart: Int32Array;
-  private incoming: Float64Array; private own: Float64Array; private primedFail: Uint8Array; private explicitPrimed: Uint8Array;
+  private incoming: Float64Array; private own: Float64Array; private primedFail: Uint8Array; private explicitPrimed: Uint8Array; private thrBuf: Float64Array;
   private coolerCount = 0;
   private queue: Int32Array; private coolerList: Int32Array; private inQueue: Uint8Array; private bunchDone: Uint8Array;
   lineType: Uint8Array; lineTarget: Int32Array; lineFlux: Float64Array; lineEff: Float64Array; lineLen: Uint8Array;
+  /** 1 if the moderator line passes through neutron shields */
+  lineShield: Uint8Array;
   running: Uint8Array;
   /** per position */
   flux: Float64Array; heatMult: Int32Array;
+  /** Shields and irradiators in position order (cluster roots besides fuel and coolers). */
+  specialList: Int32Array; specialCount = 0;
+  /** Shield flux per (position*3 + axis): contribution of the complete moderator line along that axis (TileFissionShield). */
+  shieldAxis: Float64Array;
+  /** 1 if the shield is part of a complete moderator line (TileFissionShield.inCompleteModeratorLine) */
+  shieldFunc: Uint8Array;
+  /** Flux received by each irradiator */
+  irrFlux: Float64Array;
+  /**
+   * Shields in the component fail cache: on a traced line but in no complete one (FissionReactorLogic.refreshClusters
+   * assumedValidCache check). They block moderator lines until the next layout change.
+   */
+  shieldFail: Uint8Array;
+  /** Per fuel slot: criticality used for the running check (integer) and in the flux efficiency factor. */
+  readonly critInt: number[]; readonly critFloat: number[];
+  readonly irradiator: (typeof IRRADIATOR_RECIPES)[number];
+  /** true if any fuel of the layout has intrinsic flux (TRISO) */
+  private readonly anyIntrinsic: boolean;
+  /** Cooling rate per cooler type of this reactor. */
+  readonly rates: readonly number[];
+  private allowed: Uint8Array;
   inEff: Float64Array; inFlux: Float64Array; inSet: Uint8Array; // per (i*6+d)
   modState: Uint8Array; // 0 unused, 1 passive, 2 active
   reflActive: Uint8Array;
@@ -180,6 +235,8 @@ export class Simulator {
   /** Static per-position neighbour masks for cooler positions: [casing, conductor, active moderator, active reflector, running fuel]. */
   /** Packed static neighbour masks per position: casing | conductor<<6 | active moderator<<12 | active reflector<<18 | running fuel<<24. */
   private sp: Int32Array;
+  /** Second packed static mask word: functional shield | functional irradiator<<6. */
+  private sp2: Int32Array;
   // incremental cooler solve state (grid of the last cooler solve, scratch marks)
   private coolGrid: Uint8Array; private coolReady = false; private nVersion = 0; private coolVersion = -1; private nCode: Uint8Array;
   private mark: Uint8Array; private changedList: Int32Array; private dList: Int32Array;
@@ -200,12 +257,23 @@ export class Simulator {
     const fuels = opts.fuels?.length ? opts.fuels : [opts.fuel];
     if (fuels[0] !== opts.fuel && fuels[0].id !== opts.fuel.id) throw new Error('fuels[0] must be the primary fuel');
     if (fuels.length > MAX_FUELS) throw new Error(`At most ${MAX_FUELS} fuels per layout`);
-    for (const f of fuels) {
-      if (f.reactor !== opts.reactor) throw new Error(`Fuel ${f.name} cannot be used in a ${opts.reactor.toUpperCase()}`);
-      if (f.intrinsicFlux !== 0) throw new Error('Fuels with intrinsic flux (TRISO / pebble bed) are not supported');
-    }
+    for (const f of fuels) if (f.reactor !== opts.reactor) throw new Error(`Fuel ${f.name} cannot be used in a ${opts.reactor.toUpperCase()}`);
     this.X = X; this.Y = Y; this.Z = Z; this.N = X * Y * Z;
     this.opts = opts; this.fuel = opts.fuel; this.fuels = fuels;
+    // TileSolidFissionCell / TileSaltFissionVessel.getFloatingPointCriticality / getCriticality (NCMath.toInt truncates)
+    this.critFloat = fuels.map((f) => {
+      if (!opts.decayMechanics) return f.criticality;
+      const poison = (opts.poisonLevel ?? DECAY_CONFIG.equilibriumFactors[2]) * f.decayFactor;
+      return f.criticality * (1 - f.decayFactor + poison);
+    });
+    this.critInt = this.critFloat.map((c, k) => (opts.decayMechanics ? Math.trunc(c) : fuels[k].criticality));
+    const irr = IRRADIATOR_RECIPES.find((r) => r.id === (opts.irradiatorRecipe ?? 'thorium'));
+    if (!irr) throw new Error(`Unknown irradiator recipe "${opts.irradiatorRecipe}"`);
+    this.irradiator = irr;
+    this.anyIntrinsic = fuels.some((f) => f.intrinsicFlux > 0);
+    this.rates = coolingRates(opts.reactor);
+    this.allowed = new Uint8Array(NUM_BLOCKS);
+    for (let b = 0; b < NUM_BLOCKS; b++) this.allowed[b] = isValidBlock(b, opts.reactor) && (!isFuel(b) || fuelSlot(b) < fuels.length) ? 1 : 0;
     const N = this.N;
     this.nb = new Int32Array(N * 6);
     for (let z = 0; z < Z; z++) for (let y = 0; y < Y; y++) for (let x = 0; x < X; x++) {
@@ -216,22 +284,24 @@ export class Simulator {
         this.nb[i * 6 + d] = nx < 0 || ny < 0 || nz < 0 || nx >= X || ny >= Y || nz >= Z ? -1 : this.index(nx, ny, nz);
       }
     }
-    this.rules = (opts.reactor === 'sfr' ? SINK_RULES : HEATER_RULES).map((r) => parseRule(r, opts.reactor));
+    this.rules = coolerRules(opts.reactor).map((r) => parseRule(r, opts.reactor));
     this.bunchOf = new Int32Array(N);
     this.fuelList = new Int32Array(N); this.memberList = new Int32Array(N); this.memberStart = new Int32Array(N + 1);
     this.bunchSize = new Int32Array(N); this.bunchOpenFaces = new Int32Array(N);
     this.bunchFlux = new Float64Array(N);
     this.bunchRaw = new Float64Array(N); this.bunchEff = new Float64Array(N); this.bunchBase = new Float64Array(N); this.bunchPrimed = new Uint8Array(N); this.bunchEmit = new Uint8Array(N);
-    this.incoming = new Float64Array(N); this.own = new Float64Array(N); this.primedFail = new Uint8Array(N); this.explicitPrimed = new Uint8Array(N);
+    this.incoming = new Float64Array(N); this.own = new Float64Array(N); this.primedFail = new Uint8Array(N); this.explicitPrimed = new Uint8Array(N); this.thrBuf = new Float64Array(N);
     this.queue = new Int32Array(N * 7 + 8); this.coolerList = new Int32Array(N); this.inQueue = new Uint8Array(N); this.bunchDone = new Uint8Array(N);
     this.lineType = new Uint8Array(N * 6); this.lineTarget = new Int32Array(N * 6);
-    this.lineFlux = new Float64Array(N * 6); this.lineEff = new Float64Array(N * 6); this.lineLen = new Uint8Array(N * 6);
+    this.lineFlux = new Float64Array(N * 6); this.lineEff = new Float64Array(N * 6); this.lineLen = new Uint8Array(N * 6); this.lineShield = new Uint8Array(N * 6);
     this.running = new Uint8Array(N); this.flux = new Float64Array(N); this.heatMult = new Int32Array(N);
+    this.specialList = new Int32Array(N); this.shieldAxis = new Float64Array(N * 3); this.shieldFunc = new Uint8Array(N); this.irrFlux = new Float64Array(N);
+    this.shieldFail = new Uint8Array(N);
     this.inEff = new Float64Array(N * 6); this.inFlux = new Float64Array(N * 6); this.inSet = new Uint8Array(N * 6);
     this.modState = new Uint8Array(N); this.reflActive = new Uint8Array(N);
     this.valid = new Uint8Array(N); this.failed = new Uint8Array(N); this.cluster = new Int32Array(N);
     this.srcEff = new Float64Array(N);
-    this.sp = new Int32Array(N);
+    this.sp = new Int32Array(N); this.sp2 = new Int32Array(N);
     this.nCode = new Uint8Array(N);
     this.coolGrid = new Uint8Array(N); this.mark = new Uint8Array(N); this.changedList = new Int32Array(N); this.dList = new Int32Array(N);
     this.casingMask = new Uint8Array(N);
@@ -265,6 +335,8 @@ export class Simulator {
     }
   }
 
+  /** Identifies the current neutronics state (changes whenever fuel, moderators, reflectors, shields or irradiators change). */
+  get neutronVersion() { return this.slots.length ? this.slots[this.cur].version : 0; }
   /** Forget cached state (forces a full evaluation next time). */
   invalidate() { for (const sl of this.slots) sl.ready = false; this.coolReady = false; }
   private ensureSlots() {
@@ -272,7 +344,7 @@ export class Simulator {
     const mk = (copy: boolean): NeutronSlot => {
       const c = <T extends { slice(): T }>(x: T) => (copy ? x.slice() : x);
       return {
-        sig: new Uint8Array(this.N), ready: false, primed: undefined, fuelCount: 0, bunchCount: 0, version: 0,
+        sig: new Uint8Array(this.N), ready: false, primed: undefined, fuelCount: 0, bunchCount: 0, specialCount: 0, version: 0,
         fuelList: c(this.fuelList),
         bunchOf: c(this.bunchOf),
         bunchSize: c(this.bunchSize),
@@ -287,6 +359,7 @@ export class Simulator {
         lineFlux: c(this.lineFlux),
         lineEff: c(this.lineEff),
         lineLen: c(this.lineLen),
+        lineShield: c(this.lineShield),
         running: c(this.running),
         flux: c(this.flux),
         heatMult: c(this.heatMult),
@@ -300,16 +373,21 @@ export class Simulator {
         bunchEff: c(this.bunchEff),
         bunchBase: c(this.bunchBase),
         nCounts: c(this.nCounts),
+        specialList: c(this.specialList),
+        shieldAxis: c(this.shieldAxis),
+        shieldFunc: c(this.shieldFunc),
+        irrFlux: c(this.irrFlux),
+        shieldFail: c(this.shieldFail), anyShieldFail: false, specialDirty: false,
       };
     };
     this.slots = [mk(false), mk(true)];
   }
   private useSlot(k: number) {
     const o = this.slots[this.cur];
-    o.fuelCount = this.fuelCount; o.bunchCount = this.bunchCount;
+    o.fuelCount = this.fuelCount; o.bunchCount = this.bunchCount; o.specialCount = this.specialCount;
     this.cur = k;
     const s = this.slots[k];
-    this.fuelCount = s.fuelCount; this.bunchCount = s.bunchCount;
+    this.fuelCount = s.fuelCount; this.bunchCount = s.bunchCount; this.specialCount = s.specialCount;
     this.fuelList = s.fuelList;
     this.bunchOf = s.bunchOf;
     this.bunchSize = s.bunchSize;
@@ -324,6 +402,7 @@ export class Simulator {
     this.lineFlux = s.lineFlux;
     this.lineEff = s.lineEff;
     this.lineLen = s.lineLen;
+    this.lineShield = s.lineShield;
     this.running = s.running;
     this.flux = s.flux;
     this.heatMult = s.heatMult;
@@ -337,6 +416,11 @@ export class Simulator {
     this.bunchEff = s.bunchEff;
     this.bunchBase = s.bunchBase;
     this.nCounts = s.nCounts;
+    this.specialList = s.specialList;
+    this.shieldAxis = s.shieldAxis;
+    this.shieldFunc = s.shieldFunc;
+    this.irrFlux = s.irrFlux;
+    this.shieldFail = s.shieldFail;
   }
   private slotMatches(sl: NeutronSlot, grid: Uint8Array) {
     if (!sl.ready || sl.primed !== this.opts.primed) return false;
@@ -354,9 +438,8 @@ export class Simulator {
   /** Runs the full steady-state simulation. Returns aggregated stats; per-block state stays in the buffers. */
   evaluate(grid: Uint8Array): ReactorStats {
     if (grid.length !== this.N) throw new Error(`Grid length ${grid.length} != ${this.N}`);
-    const N = this.N;
-    const maxB = FUELX0 + this.fuels.length - 1;
-    for (let i = 0; i < N; i++) if (grid[i] >= maxB) throw new Error(`Invalid block id ${grid[i]} at ${i}`);
+    const N = this.N, allowed = this.allowed;
+    for (let i = 0; i < N; i++) if (!allowed[grid[i]]) throw new Error(`Invalid block id ${grid[i]} at ${i}`);
     this.grid = grid;
     this.ensureSlots();
     if (this.slotMatches(this.slots[this.cur], grid)) this.partialEvals++;
@@ -376,9 +459,17 @@ export class Simulator {
       const sl = this.slots[this.cur];
       sl.ready = false;
       this.buildFuelBunches();
+      if (sl.anyShieldFail) { this.shieldFail.fill(0); sl.anyShieldFail = false; nchg = -1; } // traced lines depend on the old fails
       if (nchg >= 0) this.retraceAround(nchg); else this.traceLines();
       this.solveCriticality();
       this.computeModeratorsAndHeatMult();
+      // shields on traced lines that are in no complete line fail and block their lines; repeat until stable
+      while (this.specialCount > 0 && this.failShields()) {
+        sl.anyShieldFail = true;
+        this.traceLines();
+        this.solveCriticality();
+        this.computeModeratorsAndHeatMult();
+      }
       this.computeBunchHeat();
       for (let i = 0; i < N; i++) { const b = grid[i]; sl.sig[i] = NEUTRONIC[b] ? b : 0; }
       sl.primed = this.opts.primed; sl.ready = true; sl.version = ++this.nVersion;
@@ -392,10 +483,14 @@ export class Simulator {
   // ---------------------------------------------------------------- fuel bunches
   private buildFuelBunches() {
     const { grid, N, nb } = this;
-    let fc = 0;
-    const fl = this.fuelList;
-    for (let i = 0; i < N; i++) if (isFuel(grid[i])) fl[fc++] = i;
-    this.fuelCount = fc;
+    let fc = 0, sc = 0;
+    const fl = this.fuelList, sl = this.specialList;
+    for (let i = 0; i < N; i++) {
+      const b = grid[i];
+      if (isFuel(b)) fl[fc++] = i;
+      else if (b >= SHIELD0) sl[sc++] = i; // shields and irradiators are the last block ids
+    }
+    this.fuelCount = fc; this.specialCount = sc;
     const bunchOf = this.bunchOf; bunchOf.fill(-1);
     const ml = this.memberList, ms = this.memberStart;
     let B = 0, w = 0;
@@ -431,9 +526,12 @@ export class Simulator {
   bunchingFactor(b: number) { return Math.floor((6 * this.bunchSize[b]) / this.bunchOpenFaces[b]); }
   /** Fuel of position i (must be a fuel component). */
   fuelAt(i: number): FuelDef { return this.fuels[fuelSlot(this.grid[i])]; }
+  /** Fuel slot of bunch b (all members share it). */
+  bunchSlot(b: number): number { return fuelSlot(this.grid[this.memberList[this.memberStart[b]]]); }
   /** Fuel of bunch b (all members share it). */
-  bunchFuel(b: number): FuelDef { return this.fuels[fuelSlot(this.grid[this.memberList[this.memberStart[b]]])]; }
-  criticalityThreshold(b: number) { return this.surfaceFactor(b) * this.bunchFuel(b).criticality; }
+  bunchFuel(b: number): FuelDef { return this.fuels[this.bunchSlot(b)]; }
+  /** FissionFuelBunch.getCriticalityFactor(getCriticality()) */
+  criticalityThreshold(b: number) { return this.surfaceFactor(b) * this.critInt[this.bunchSlot(b)]; }
 
   // ---------------------------------------------------------------- moderator lines
   /** IFissionFuelComponent.defaultDistributeFlux, geometry part (independent of activity). */
@@ -460,33 +558,64 @@ export class Simulator {
     }
     for (let k = 0; k < n; k++) { const f = list[k]; m[f] = 0; this.traceFuel(f); }
   }
-  /** IFissionFuelComponent.defaultDistributeFlux, geometry part (independent of activity), for fuel component f. */
+  /**
+   * IFissionFuelComponent.defaultDistributeFlux, geometry part (independent of activity), for fuel component f.
+   * Shields count as moderators with flux factor 0 and their own efficiency (blocking while shielding);
+   * a fuel with intrinsic flux also feeds face-adjacent fuel components and irradiators directly.
+   */
   private traceFuel(f: number) {
     const { grid, nb, reach } = this;
+    const intrinsic = this.anyIntrinsic ? this.fuels[fuelSlot(grid[f])].intrinsicFlux : 0;
+    const shieldsOn = !!this.opts.shieldsOn;
     for (let d = 0; d < 6; d++) {
       const li = f * 6 + d;
-      this.lineType[li] = 0;
+      this.lineType[li] = LINE_NONE; this.lineShield[li] = 0;
       let p = nb[li];
-      if (p < 0 || !isModerator(grid[p])) continue; // first block must be a (non-blocking) moderator
-      let fluxSum = MODERATORS[grid[p] - MOD0].fluxFactor;
-      let effSum = MODERATORS[grid[p] - MOD0].efficiency;
+      if (p < 0) continue;
+      let b = grid[p];
+      if (intrinsic > 0) {
+        if (isFuel(b)) {
+          this.lineType[li] = LINE_FUEL; this.lineTarget[li] = p; this.lineFlux[li] = intrinsic;
+          this.lineEff[li] = FISSION_CONFIG.intrinsicFluxEfficiency; this.lineLen[li] = 0;
+          continue;
+        }
+        if (isIrradiator(b)) {
+          this.lineType[li] = LINE_IRRADIATOR; this.lineTarget[li] = p; this.lineFlux[li] = intrinsic;
+          this.lineEff[li] = this.irradiator.efficiency * FISSION_CONFIG.intrinsicFluxEfficiency; this.lineLen[li] = 0;
+          continue;
+        }
+      }
+      // first block must be a (non-blocking) moderator or shield
+      let fluxSum = intrinsic, effSum = 0, shield = 0;
+      if (isModerator(b)) { fluxSum += MODERATORS[b - MOD0].fluxFactor; effSum += MODERATORS[b - MOD0].efficiency; }
+      else if (isShield(b) && !shieldsOn && !this.shieldFail[p]) { effSum += SHIELDS[b - SHIELD0].efficiency; shield = 1; }
+      else continue;
       for (let i = 2; i <= reach + 1; i++) {
         p = nb[p * 6 + d];
         if (p < 0) break; // casing ends the line
-        const b = grid[p];
+        b = grid[p];
         if (isModerator(b)) {
           fluxSum += MODERATORS[b - MOD0].fluxFactor; effSum += MODERATORS[b - MOD0].efficiency;
           continue;
         }
+        if (isShield(b)) {
+          if (shieldsOn || this.shieldFail[p]) break; // a shielding (or failed) shield blocks the line
+          effSum += SHIELDS[b - SHIELD0].efficiency; shield = 1;
+          continue;
+        }
         const mods = i - 1;
         if (isFuel(b)) {
-          this.lineType[li] = 1; this.lineTarget[li] = p; this.lineFlux[li] = fluxSum; this.lineEff[li] = effSum / mods; this.lineLen[li] = mods;
+          this.lineType[li] = LINE_FUEL; this.lineTarget[li] = p; this.lineFlux[li] = fluxSum; this.lineEff[li] = effSum / mods; this.lineLen[li] = mods;
+        } else if (isIrradiator(b)) {
+          this.lineType[li] = LINE_IRRADIATOR; this.lineTarget[li] = p; this.lineFlux[li] = fluxSum;
+          this.lineEff[li] = (this.irradiator.efficiency * effSum) / mods; this.lineLen[li] = mods;
         } else if (isReflector(b) && mods <= Math.floor(reach / 2)) {
           const r = REFLECTORS[b - REFL0];
-          this.lineType[li] = 2; this.lineTarget[li] = p;
+          this.lineType[li] = LINE_REFLECTOR; this.lineTarget[li] = p;
           this.lineFlux[li] = Math.floor(2 * fluxSum * r.reflectivity);
           this.lineEff[li] = (r.efficiency * effSum) / mods; this.lineLen[li] = mods;
         }
+        if (this.lineType[li] !== LINE_NONE) this.lineShield[li] = shield;
         break;
       }
     }
@@ -523,6 +652,8 @@ export class Simulator {
       for (const [i, e] of best) if (!this.fuelAt(i).selfPriming) srcEff[i] = e;
     }
     const emit = this.bunchEmit;
+    const thr = this.thrBuf;
+    for (let b = 0; b < B; b++) thr[b] = this.criticalityThreshold(b);
     for (;;) {
       emit.fill(0, 0, B); incoming.fill(0, 0, B); own.fill(0, 0, B);
       let qh = 0, qt = 0;
@@ -540,7 +671,7 @@ export class Simulator {
             if (t === 1) {
               const tb = bunchOf[lineTarget[li]];
               incoming[tb] += lineFlux[li];
-              if (!emit[tb] && incoming[tb] >= this.criticalityThreshold(tb)) { emit[tb] = 1; queue[qt++] = tb; }
+              if (!emit[tb] && incoming[tb] >= thr[tb]) { emit[tb] = 1; queue[qt++] = tb; }
             } else if (t === 2) {
               own[b] += lineFlux[li];
             }
@@ -550,7 +681,7 @@ export class Simulator {
       let anyFail = false;
       for (let b = 0; b < B; b++) {
         this.bunchFlux[b] = incoming[b] + (emit[b] ? own[b] : 0);
-        if (emit[b] && this.bunchFlux[b] < this.criticalityThreshold(b)) { primedFail[b] = 1; anyFail = true; }
+        if (emit[b] && this.bunchFlux[b] < thr[b]) { primedFail[b] = 1; anyFail = true; }
       }
       if (!anyFail) break;
     }
@@ -560,42 +691,113 @@ export class Simulator {
 
   // ---------------------------------------------------------------- heat multipliers & moderators
   private computeModeratorsAndHeatMult() {
-    const { fuelList, fuelCount, lineType, lineTarget, lineFlux, lineEff, lineLen, running } = this;
+    const { fuelList, fuelCount, lineType, lineTarget, lineFlux, lineEff, lineLen, lineShield, running, irrFlux } = this;
     this.heatMult.fill(0); this.flux.fill(0); this.inSet.fill(0);
     this.modState.fill(0); this.reflActive.fill(0);
+    const sl = this.slots[this.cur];
+    if (this.specialCount > 0 || sl.specialDirty) { irrFlux.fill(0); this.shieldFunc.fill(0); this.shieldAxis.fill(0); sl.specialDirty = this.specialCount > 0; }
+    let irrLines = false;
     for (let k = 0; k < fuelCount; k++) {
       const f = fuelList[k];
       if (!running[f]) continue; // only running (emitting) components distribute flux
       for (let d = 0; d < 6; d++) {
         const li = f * 6 + d, t = lineType[li];
-        if (t === 0) continue;
+        if (t === LINE_NONE) continue;
         const target = lineTarget[li];
-        if (t === 1) {
+        if (t === LINE_FUEL) {
           const tli = target * 6 + opposite(d);
           this.heatMult[target]++;
           this.flux[target] += lineFlux[li];
           this.inSet[tli] = 1; this.inFlux[tli] = lineFlux[li]; this.inEff[tli] = lineEff[li];
-          if (running[target]) this.markLine(f, d, lineLen[li], true);
+          if (running[target]) this.completeLine(f, d, t, lineLen[li], lineShield[li], target);
         } else {
+          // reflector / irradiator: the line counts for the emitting component itself
           this.heatMult[f]++;
-          this.flux[f] += lineFlux[li];
           this.inSet[li] = 1; this.inFlux[li] = lineFlux[li]; this.inEff[li] = lineEff[li];
-          this.markLine(f, d, lineLen[li], false);
-          this.reflActive[target] = 1;
+          if (t === LINE_REFLECTOR) {
+            this.flux[f] += lineFlux[li];
+            this.completeLine(f, d, t, lineLen[li], lineShield[li], target);
+            this.reflActive[target] = 1;
+          } else {
+            irrFlux[target] += lineFlux[li];
+            irrLines = true;
+          }
         }
       }
     }
-  }
-  /** First moderator (and last, for fuel-to-fuel lines) is active; the rest are passive. */
-  private markLine(f: number, d: number, len: number, lastActive: boolean) {
-    let p = f;
-    for (let m = 1; m <= len; m++) {
-      p = this.nb[p * 6 + d];
-      const active = m === 1 || (lastActive && m === len);
-      if (active) this.modState[p] = 2;
-      else if (this.modState[p] === 0) this.modState[p] = 1;
+    if (!irrLines) return;
+    // a line to an irradiator is complete once the irradiator processes (has flux)
+    for (let k = 0; k < fuelCount; k++) {
+      const f = fuelList[k];
+      if (!running[f]) continue;
+      for (let d = 0; d < 6; d++) {
+        const li = f * 6 + d;
+        if (lineType[li] === LINE_IRRADIATOR && irrFlux[lineTarget[li]] > 0) this.completeLine(f, d, LINE_IRRADIATOR, lineLen[li], lineShield[li], lineTarget[li]);
+      }
     }
   }
+  /**
+   * A complete moderator line (IFissionComponent.onModeratorLineComplete / addToModeratorCache): the first moderator
+   * (and the last, for fuel-to-fuel lines) is active, the rest passive; shields on the line become functional and take
+   * the line's flux contribution for its axis (TileFissionShield.getLineFluxContribution, first line per axis).
+   */
+  private completeLine(f: number, d: number, type: number, len: number, hasShield: number, target: number) {
+    const { nb, grid, modState } = this;
+    let p = f;
+    if (!hasShield) {
+      for (let m = 1; m <= len; m++) {
+        p = nb[p * 6 + d];
+        if (m === 1 || (type === LINE_FUEL && m === len)) modState[p] = 2;
+        else if (modState[p] === 0) modState[p] = 1;
+      }
+      return;
+    }
+    let total = 0;
+    for (let m = 1; m <= len; m++) { p = nb[p * 6 + d]; if (isModerator(grid[p])) total += MODERATORS[grid[p] - MOD0].fluxFactor; }
+    const axis = d >> 1;
+    let inner = 0;
+    p = f;
+    for (let m = 1; m <= len; m++) {
+      p = nb[p * 6 + d];
+      const b = grid[p];
+      if (isShield(b)) {
+        // only one complete line can pass a shield along each axis (both directions of a fuel-fuel line give the same value)
+        this.shieldFunc[p] = 1;
+        this.shieldAxis[p * 3 + axis] = type === LINE_FUEL ? total
+          : type === LINE_IRRADIATOR ? inner
+          : Math.floor(total * (1 + REFLECTORS[grid[target] - REFL0].reflectivity));
+        continue;
+      }
+      inner += MODERATORS[b - MOD0].fluxFactor;
+      if (m === 1 || (type === LINE_FUEL && m === len)) modState[p] = 2;
+      else if (modState[p] === 0) modState[p] = 1;
+    }
+  }
+  /**
+   * Shields on a line from a running component that ends at a non-functional fuel component / irradiator and that are
+   * in no complete line are added to the fail cache. Returns true if any shield failed (the neutronics must be redone).
+   */
+  private failShields(): boolean {
+    const { fuelList, fuelCount, lineType, lineTarget, lineLen, lineShield, running, nb, grid } = this;
+    let any = false;
+    for (let k = 0; k < fuelCount; k++) {
+      const f = fuelList[k];
+      if (!running[f]) continue;
+      for (let d = 0; d < 6; d++) {
+        const li = f * 6 + d, t = lineType[li];
+        if (!lineShield[li] || t === LINE_REFLECTOR) continue;
+        if (t === LINE_FUEL ? running[lineTarget[li]] : this.irrFlux[lineTarget[li]] > 0) continue; // complete
+        let p = f;
+        for (let m = 1; m <= lineLen[li]; m++) {
+          p = nb[p * 6 + d];
+          if (isShield(grid[p]) && !this.shieldFunc[p] && !this.shieldFail[p]) { this.shieldFail[p] = 1; any = true; }
+        }
+      }
+    }
+    return any;
+  }
+  /** Flux of shield s (sum of its per-axis line contributions). */
+  shieldFlux(s: number) { return this.shieldAxis[s * 3] + this.shieldAxis[s * 3 + 1] + this.shieldAxis[s * 3 + 2]; }
 
   // ---------------------------------------------------------------- cooling components
   /** Bitmask of directions in which the rule's dependency is satisfied for position i. */
@@ -603,7 +805,10 @@ export class Simulator {
     const t = TARGET_CODE[sub.target];
     return t === 5 ? this.coolerMask(i, sub.coolerType) : t === 6 ? 0 : this.staticMaskAt(i, t);
   }
-  /** Mask of neighbours of i that are of static kind t (0 casing, 1 conductor, 2 active moderator, 3 active reflector, 4 running fuel). */
+  /**
+   * Mask of neighbours of i that are of static kind t (0 casing, 1 conductor, 2 active moderator, 3 active reflector,
+   * 4 running fuel, 7 functional shield, 8 functional irradiator).
+   */
   private staticMaskAt(i: number, t: number): number {
     if (t === 0) return this.casingMask[i];
     const { nb, grid } = this;
@@ -611,10 +816,25 @@ export class Simulator {
     for (let d = 0; d < 6; d++) {
       const j = nb[i * 6 + d];
       if (j < 0) continue;
-      const ok = t === 1 ? grid[j] === CONDUCTOR : t === 2 ? this.modState[j] === 2 : t === 3 ? this.reflActive[j] === 1 : this.running[j] === 1;
+      const ok = t === 1 ? grid[j] === CONDUCTOR : t === 2 ? this.modState[j] === 2 && isModerator(grid[j]) : t === 3 ? this.reflActive[j] === 1
+        : t === 4 ? this.running[j] === 1 && isFuel(grid[j]) : t === 7 ? isShield(grid[j]) && this.shieldFunc[j] === 1 : isIrradiator(grid[j]) && this.irrFlux[j] > 0;
       if (ok) m |= 1 << d;
     }
     return m;
+  }
+  /** Packed shield / irradiator masks of position i (functional shield | functional irradiator << 6). */
+  private packedSpecial(i: number): number {
+    if (this.specialCount === 0) return 0;
+    const { nb, grid } = this;
+    let sh = 0, ir = 0;
+    for (let d = 0; d < 6; d++) {
+      const j = nb[i * 6 + d];
+      if (j < 0) continue;
+      const b = grid[j];
+      if (isShield(b)) { if (this.shieldFunc[j]) sh |= 1 << d; }
+      else if (isIrradiator(b) && this.irrFlux[j] > 0) ir |= 1 << d;
+    }
+    return sh | (ir << 6);
   }
   /** Packed static masks of position i (one neighbour pass). */
   private packedStatic(i: number): number {
@@ -641,31 +861,31 @@ export class Simulator {
     return m;
   }
   /** Rule check given the packed static masks of position i. */
-  private checkRule(i: number, r: number, sp: number): boolean {
+  private checkRule(i: number, r: number, sp: number, sp2: number): boolean {
     const and = this.ruleAnd[r] === 1;
     const end = this.subStart[r + 1];
     for (let k = this.subStart[r]; k < end; k++) {
       const t = this.subTarget[k];
-      const mask = t === 5 ? this.coolerMask(i, this.subType[k]) : t === 6 ? 0 : (sp >>> (6 * t)) & 63;
+      const mask = t < 5 ? (sp >>> (6 * t)) & 63 : t === 5 ? this.coolerMask(i, this.subType[k]) : t === 6 ? 0 : (sp2 >>> (6 * (t - 7))) & 63;
       const ok = this.subTable[k * 64 + mask] === 1;
       if (and ? !ok : ok) return !and;
     }
     return and;
   }
   ruleSatisfied(i: number, coolerType: number): boolean {
-    return this.checkRule(i, coolerType, this.packedStatic(i));
+    return this.checkRule(i, coolerType, this.packedStatic(i), this.packedSpecial(i));
   }
   /** First cooler type of `order` whose placement rule holds at i in the current state, or -1. */
   firstValidCooler(i: number, order: ArrayLike<number>): number {
-    const p = this.packedStatic(i);
-    for (let k = 0; k < order.length; k++) if (this.checkRule(i, order[k], p)) return order[k];
+    const p = this.packedStatic(i), p2 = this.packedSpecial(i);
+    for (let k = 0; k < order.length; k++) if (this.checkRule(i, order[k], p, p2)) return order[k];
     return -1;
   }
   /** Cooler types of `types` whose placement rule holds at i in the current state. */
   validCoolerTypes(i: number, types: ArrayLike<number>, out: number[] = []): number[] {
-    const p = this.packedStatic(i);
+    const p = this.packedStatic(i), p2 = this.packedSpecial(i);
     out.length = 0;
-    for (let k = 0; k < types.length; k++) if (this.checkRule(i, types[k], p)) out.push(types[k]);
+    for (let k = 0; k < types.length; k++) if (this.checkRule(i, types[k], p, p2)) out.push(types[k]);
     return out;
   }
 
@@ -678,12 +898,12 @@ export class Simulator {
   private nChanged = new Int32Array(16); private retraceMark = new Uint8Array(0);
   /** Refreshes the static masks of cooler i; re-decides static rules; marks dynamic coolers whose inputs changed. */
   private visitCooler(i: number, full: boolean) {
-    const { grid, nb, valid, failed, mark, dep, sp } = this;
-    const t = grid[i] - COOLER0, p = this.packedStatic(i);
+    const { grid, nb, valid, failed, mark, dep, sp, sp2 } = this;
+    const t = grid[i] - COOLER0, p = this.packedStatic(i), p2 = this.packedSpecial(i);
     const wasChanged = mark[i] === 2;
     if (wasChanged) mark[i] = 0;
     if (this.ruleStatic[t]) {
-      const v = this.checkRule(i, t, p) ? 1 : 0;
+      const v = this.checkRule(i, t, p, p2) ? 1 : 0;
       if (v !== valid[i] || wasChanged) {
         valid[i] = v;
         for (let d = 0; d < 6; d++) {
@@ -692,11 +912,32 @@ export class Simulator {
         }
       }
       failed[i] = 0;
-    } else if ((full || wasChanged || p !== sp[i]) && mark[i] !== 1) { mark[i] = 1; this.nseed++; }
-    sp[i] = p;
+    } else if ((full || wasChanged || p !== sp[i] || p2 !== sp2[i]) && mark[i] !== 1) { mark[i] = 1; this.nseed++; }
+    sp[i] = p; sp2[i] = p2;
+  }
+  /** Neutronic outputs the placement rules can see at position i (running fuel, moderator state, active reflector, functional shield / irradiator). */
+  private neutronCode(i: number) {
+    const c = this.running[i] | (this.modState[i] << 1) | (this.reflActive[i] << 3);
+    return this.specialCount === 0 ? c : c | (this.shieldFunc[i] << 4) | ((this.irrFlux[i] > 0 ? 1 : 0) << 5);
+  }
+  /** Fills codes[i] with neutronCode(i) (or, with `cmp`, appends the positions whose code differs to `out`). */
+  private neutronCodes(codes: Uint8Array, cmp: boolean, out: Int32Array, n: number): number {
+    const { N, running, modState, reflActive } = this;
+    if (this.specialCount === 0) {
+      for (let i = 0; i < N; i++) {
+        const c = running[i] | (modState[i] << 1) | (reflActive[i] << 3);
+        if (!cmp) codes[i] = c; else if (c !== codes[i]) out[n++] = i;
+      }
+      return n;
+    }
+    for (let i = 0; i < N; i++) {
+      const c = this.neutronCode(i);
+      if (!cmp) codes[i] = c; else if (c !== codes[i]) out[n++] = i;
+    }
+    return n;
   }
   private solveCoolers() {
-    const { grid, N, nb, valid, failed, mark, dep, sp, running, modState, reflActive, nCode } = this;
+    const { grid, N, nb, valid, failed, mark, dep, sp, sp2, nCode } = this;
     const cl = this.coolerList, last = this.coolGrid, changed = this.changedList, D = this.dList;
     let nc = 0;
     for (let i = 0; i < N; i++) if (isCoolB(grid[i])) cl[nc++] = i;
@@ -708,23 +949,20 @@ export class Simulator {
       for (let i = 0; i < N; i++) if (grid[i] !== last[i]) changed[nch++] = i;
       nGrid = nch;
       if (version !== this.coolVersion) {
-        for (let i = 0; i < N; i++) {
-          const c = running[i] | (modState[i] << 1) | (reflActive[i] << 3);
-          if (c !== nCode[i]) changed[nch++] = i;
-        }
+        nch = this.neutronCodes(nCode, true, changed, nch);
       }
       if (nch * 6 > nc) full = true; // a full solve is cheaper than tracking many touched neighbourhoods
     }
     this.coolVersion = version;
     if (full) {
       this.coolReady = true; last.set(grid);
-      for (let i = 0; i < N; i++) nCode[i] = running[i] | (modState[i] << 1) | (reflActive[i] << 3);
+      this.neutronCodes(nCode, false, changed, 0);
       valid.fill(0); failed.fill(0);
       let nd = 0;
       for (let k = 0; k < nc; k++) {
-        const i = cl[k], t = grid[i] - COOLER0, p = this.packedStatic(i);
-        sp[i] = p;
-        if (this.ruleStatic[t]) valid[i] = this.checkRule(i, t, p) ? 1 : 0;
+        const i = cl[k], t = grid[i] - COOLER0, p = this.packedStatic(i), p2 = this.packedSpecial(i);
+        sp[i] = p; sp2[i] = p2;
+        if (this.ruleStatic[t]) valid[i] = this.checkRule(i, t, p, p2) ? 1 : 0;
         else D[nd++] = i;
       }
       this.coolerSolved += nd;
@@ -736,7 +974,7 @@ export class Simulator {
       last[i] = grid[i]; valid[i] = 0; failed[i] = 0;
       if (isCoolB(grid[i])) mark[i] = 2; // changed cooler
     }
-    for (let k = nGrid; k < nch; k++) { const i = changed[k]; nCode[i] = running[i] | (modState[i] << 1) | (reflActive[i] << 3); }
+    for (let k = nGrid; k < nch; k++) { const i = changed[k]; nCode[i] = this.neutronCode(i); }
     // Static rules are re-decided directly around touched cells; dynamic coolers whose inputs may have changed are seeds.
     this.nseed = 0;
     for (let k = 0; k < nch; k++) {
@@ -776,7 +1014,7 @@ export class Simulator {
    * so solving only the affected ones reproduces the full solve.
    */
   private solveSubset(L: Int32Array, nc: number) {
-    const { grid, nb, valid, failed, inQueue, queue, sp } = this;
+    const { grid, nb, valid, failed, inQueue, queue, sp, sp2 } = this;
     const cap = queue.length;
     for (let guard = 0; guard <= nc; guard++) {
       for (let k = 0; k < nc; k++) valid[L[k]] = 0;
@@ -787,7 +1025,7 @@ export class Simulator {
       while (size > 0 && budget-- > 0) {
         const i = queue[qh]; qh = (qh + 1) % cap; size--; inQueue[i] = 0;
         const t = grid[i] - COOLER0;
-        const ok = this.checkRule(i, t, sp[i]) ? 1 : 0;
+        const ok = this.checkRule(i, t, sp[i], sp2[i]) ? 1 : 0;
         if (ok === valid[i]) continue;
         if (!ok && this.rules[t].requiresRecheck) { failed[i] = 1; restart = true; break; }
         valid[i] = ok;
@@ -799,7 +1037,7 @@ export class Simulator {
       for (let k = 0; k < nc; k++) inQueue[L[k]] = 0;
       if (!restart) {
         // final recheck of assumed-valid components
-        for (let k = 0; k < nc; k++) { const i = L[k]; if (valid[i] && !this.checkRule(i, grid[i] - COOLER0, sp[i])) { failed[i] = 1; restart = true; } }
+        for (let k = 0; k < nc; k++) { const i = L[k]; if (valid[i] && !this.checkRule(i, grid[i] - COOLER0, sp[i], sp2[i])) { failed[i] = 1; restart = true; } }
       }
       if (!restart) return;
     }
@@ -807,12 +1045,15 @@ export class Simulator {
 
   // ---------------------------------------------------------------- clusters
   isHeatConductor(i: number) {
-    const b = this.grid[i];
-    return (isFuel(b) && this.running[i] === 1) || (isCoolB(b) && this.valid[i] === 1) || b === CONDUCTOR;
+    return this.grid[i] === CONDUCTOR || this.isFunctionalComponent(i);
   }
+  /** Running fuel, valid cooler, shield in a complete moderator line, or irradiator receiving flux. */
   isFunctionalComponent(i: number) {
     const b = this.grid[i];
-    return (isFuel(b) && this.running[i] === 1) || (isCoolB(b) && this.valid[i] === 1);
+    if (isFuel(b)) return this.running[i] === 1;
+    if (isCoolB(b)) return this.valid[i] === 1;
+    if (isShield(b)) return this.shieldFunc[i] === 1;
+    return isIrradiator(b) && this.irrFlux[i] > 0;
   }
   /** Cluster members are stored contiguously: clusterMembers[clusterStart[c] .. clusterStart[c+1]). */
   clusterCount = 0;
@@ -826,13 +1067,19 @@ export class Simulator {
     const cl = this.cluster; cl.fill(-1);
     const m = this.clusterMembers, cs = this.clusterStart, cw = this.clusterWall;
     let C = 0, w = 0;
-    const fl = this.fuelList, fc = this.fuelCount, kl = this.coolerList, kc = this.coolerCount;
-    for (let a = 0, b = 0; a < fc || b < kc;) {
-      // merge the (sorted) fuel and cooler lists so clusters are numbered in position order
-      const s = b >= kc || (a < fc && fl[a] < kl[b]) ? fl[a++] : kl[b++];
+    const fl = this.fuelList, fc = this.fuelCount, kl = this.coolerList, kc = this.coolerCount, sl = this.specialList, sc = this.specialCount;
+    const special = sc > 0;
+    for (let a = 0, b = 0, c = 0; a < fc || b < kc || c < sc;) {
+      // merge the (sorted) fuel, cooler and shield / irradiator lists so clusters are numbered in position order
+      let s: number;
+      if (!special) s = b >= kc || (a < fc && fl[a] < kl[b]) ? fl[a++] : kl[b++];
+      else {
+        const fa = a < fc ? fl[a] : N, kb = b < kc ? kl[b] : N, sx = c < sc ? sl[c] : N;
+        s = fa < kb ? (fa < sx ? fl[a++] : sl[c++]) : (kb < sx ? kl[b++] : sl[c++]);
+      }
       if (cl[s] >= 0) continue;
       const bs = grid[s];
-      if (!((isFuel(bs) && running[s] === 1) || (isCoolB(bs) && valid[s] === 1))) continue;
+      if (!((isFuel(bs) && running[s] === 1) || (isCoolB(bs) && valid[s] === 1) || (special && this.isFunctionalComponent(s)))) continue;
       const id = C++; cs[id] = w; m[w++] = s; cl[s] = id; let wall = 0;
       for (let k = cs[id]; k < w; k++) {
         const i = m[k];
@@ -841,7 +1088,7 @@ export class Simulator {
           if (j < 0) { wall = 1; continue; }
           if (cl[j] >= 0) continue;
           const b = grid[j];
-          if ((isFuel(b) && running[j] === 1) || (isCoolB(b) && valid[j] === 1) || b === CONDUCTOR) { cl[j] = id; m[w++] = j; }
+          if ((isFuel(b) && running[j] === 1) || (isCoolB(b) && valid[j] === 1) || b === CONDUCTOR || (special && this.isFunctionalComponent(j))) { cl[j] = id; m[w++] = j; }
         }
       }
       cw[id] = wall;
@@ -860,7 +1107,7 @@ export class Simulator {
     return count === 0 ? 0 : eff / count;
   }
   fluxEfficiencyFactor(b: number) {
-    const c = this.bunchFuel(b).criticality;
+    const c = this.critFloat[this.bunchSlot(b)];
     const fl = this.bunchFlux[b] / this.surfaceFactor(b);
     return (1 + Math.exp(-2 * c)) / (1 + Math.exp(2 * (fl - 2 * c)));
   }
@@ -902,7 +1149,10 @@ export class Simulator {
   private computeStats(): ReactorStats {
     const { grid, N } = this;
     const cfg = FISSION_CONFIG;
-    const sfr = this.opts.reactor === 'sfr';
+    const reactor = this.opts.reactor;
+    const sfr = reactor === 'sfr';
+    const rates = this.rates;
+    const irr = this.irradiator;
     const clusters: ClusterStats[] = [];
     const activeMods = this.nCounts[0], passiveMods = this.nCounts[1], activeRefl = this.nCounts[2];
     const coolers = this.coolerCount;
@@ -915,7 +1165,9 @@ export class Simulator {
       for (let q = cs[c]; q < cs[c + 1]; q++) {
         const i = cm[q];
         const b = grid[i];
-        if (!this.isFunctionalComponent(i)) continue;
+        if (isFuel(b)) { if (!this.running[i]) continue; }
+        else if (isCoolB(b)) { if (!this.valid[i]) continue; }
+        else if (b === CONDUCTOR || !this.isFunctionalComponent(i)) continue;
         componentCount++;
         if (isFuel(b)) {
           fuelCount++;
@@ -923,8 +1175,15 @@ export class Simulator {
           if (bunchDone[bunch]) continue;
           bunchDone[bunch] = 1;
           raw += this.bunchRaw[bunch]; eff += this.bunchEff[bunch]; base += this.bunchBase[bunch];
+        } else if (isShield(b)) {
+          // TileFissionShield.getRawHeating / getEffectiveHeating
+          const sh = SHIELDS[b - SHIELD0], fl = this.shieldFlux(i);
+          raw += Math.floor(fl * sh.heatPerFlux); eff += fl * sh.heatPerFlux * sh.efficiency;
+        } else if (isIrradiator(b)) {
+          // TileFissionIrradiator.getRawHeating / getEffectiveHeating (zero for the default recipes)
+          raw += Math.floor(this.irrFlux[i] * irr.heatPerFlux); eff += this.irrFlux[i] * irr.heatPerFlux * irr.efficiency;
         } else {
-          cooling += COOLING_RATES[b - COOLER0];
+          cooling += rates[b - COOLER0];
         }
       }
       const ocf = cooling === 0 ? 1 : Math.min(1, (raw + cfg.coolingEfficiencyLeniency) / cooling);
@@ -953,18 +1212,21 @@ export class Simulator {
     const hotCoolant: Record<string, number> = {};
     let meanHSM = 0;
     if (!sfr) {
-      // MoltenSaltFissionLogic.refreshReactorStats: heater heating speed multipliers
+      // MoltenSaltFissionLogic / PebbleBedFissionLogic.refreshReactorStats: heater / gas cooler heating speed multipliers
+      const keys = reactor === 'msr' ? HEATER_COOLANTS : GAS_COOLANTS;
+      const perMB = reactor === 'msr' ? cfg.heaterCoolantHeatPerMB : cfg.coolerCoolantHeatPerMB;
+      const outMult = reactor === 'msr' ? 1 : cfg.gasCoolerOutputPerMB;
       let weighted = 0, totalCooling = 0; effective = 0;
       for (const c of clusters) {
         c.heatingSpeedMultiplier = c.meanEfficiency * sparsity * (c.rawHeating >= c.cooling ? 1 : c.rawHeating / c.cooling);
         for (let q = cs[c.id]; q < cs[c.id + 1]; q++) {
           const i = cm[q];
           if (isCoolB(grid[i]) && this.valid[i]) {
-            const rate = COOLING_RATES[grid[i] - COOLER0];
+            const rate = rates[grid[i] - COOLER0];
             const hsm = c.heatingSpeedMultiplier;
             weighted += hsm * rate; totalCooling += rate; effective += hsm * rate;
-            const key = HEATER_COOLANTS[grid[i] - COOLER0];
-            hotCoolant[key] = (hotCoolant[key] ?? 0) + (hsm * rate) / cfg.heaterCoolantHeatPerMB;
+            const key = keys[grid[i] - COOLER0];
+            hotCoolant[key] = (hotCoolant[key] ?? 0) + (outMult * hsm * rate) / perMB;
           }
         }
       }
@@ -983,14 +1245,17 @@ export class Simulator {
       outputFluid = coolantInput * cool.outputPerRecipe / cool.inputPerRecipe;
       outputFluidName = cool.product;
       rf = outputFluid * cool.rfPerOutputMB;
-      // each running cell consumes one ingot per (time * undercoolingLifetimeFactor) ticks
-
-    } else {
+    } else if (reactor === 'msr') {
       outputFluid = Object.values(hotCoolant).reduce((a, b) => a + b, 0);
       outputFluidName = 'Hot coolant';
-
+    } else {
+      // hot gas coolants drive turbines directly (TurbineRecipes: 32 RF/mB)
+      outputFluid = Object.values(hotCoolant).reduce((a, b) => a + b, 0);
+      coolantInput = outputFluid / cfg.gasCoolerOutputPerMB;
+      outputFluidName = 'Hot gas';
+      rf = outputFluid * cfg.hotGasRFPerMB;
     }
-    // per-fuel usage: each running component consumes one ingot (SFR) / 144 mB (MSR) per (time × undercooling lifetime factor) ticks
+    // per-fuel usage: each running component consumes one ingot (SFR / PBR) / 144 mB (MSR) per (time × undercooling lifetime factor) ticks
     const usage: FuelUsage[] = this.fuels.map((f) => ({ fuelId: f.id, name: f.name, placed: 0, running: 0, producing: 0, perHour: 0, rawHeating: 0, effectiveHeating: 0 }));
     for (let k = 0; k < this.fuelCount; k++) {
       const i = this.fuelList[k], u = usage[fuelSlot(grid[i])];
@@ -1003,22 +1268,37 @@ export class Simulator {
       if (sfr && !cl.connectedToWall) continue;
       u.producing++;
       const f = this.fuelAt(i);
-      u.perHour += (72000 * (sfr ? 1 : 144)) / (f.time * cl.undercoolingLifetimeFactor);
+      u.perHour += (72000 * (reactor === 'msr' ? 144 : 1)) / (f.time * cl.undercoolingLifetimeFactor);
       // component share of its bunch heat (bunch heat is split evenly over running members)
       const b = this.bunchOf[i];
       let rm = 0;
       for (let q = this.memberStart[b]; q < this.memberStart[b + 1]; q++) if (this.running[this.memberList[q]]) rm++;
       const raw = this.bunchRaw[b] / rm;
       u.rawHeating += raw;
-      // SFR: own efficiency-weighted heat; MSR: the cluster's heater output shared in proportion to raw heat
+      // SFR: own efficiency-weighted heat; MSR / PBR: the cluster's heater output shared in proportion to raw heat
       u.effectiveHeating += sfr ? (this.bunchEff[b] / rm) * cl.overcoolingEfficiencyFactor * sparsity
         : cl.rawHeating > 0 ? (cl.heatingSpeedMultiplier * cl.cooling * raw) / cl.rawHeating : 0;
     }
     for (const u of usage) fuelPerHour += u.perHour;
+    // shields and irradiators
+    let shields = 0, activeShields = 0, shieldRaw = 0, shieldEff = 0, irradiators = 0, activeIrr = 0, irrFluxSum = 0;
+    for (let k = 0; k < this.specialCount; k++) {
+      const i = this.specialList[k], b = grid[i];
+      if (isShield(b)) {
+        shields++;
+        if (!this.shieldFunc[i]) continue;
+        activeShields++;
+        const sh = SHIELDS[b - SHIELD0], fl = this.shieldFlux(i);
+        shieldRaw += Math.floor(fl * sh.heatPerFlux); shieldEff += fl * sh.heatPerFlux * sh.efficiency;
+      } else {
+        irradiators++;
+        if (this.irrFlux[i] > 0) { activeIrr++; irrFluxSum += this.irrFlux[i]; }
+      }
+    }
     const runningAll = clusters.reduce((a, c) => a + c.fuelCount, 0);
     const stable = excess <= 0;
     return {
-      reactor: this.opts.reactor, dims: [this.X, this.Y, this.Z], interiorVolume: N,
+      reactor, dims: [this.X, this.Y, this.Z], interiorVolume: N,
       fuelComponents: this.fuelCount, runningFuelComponents: sfr ? runningFuel : runningAll,
       coolers, validCoolers, activeModerators: activeMods, passiveModerators: passiveMods, activeReflectors: activeRefl,
       usefulPartCount: useful, usefulPartRatio: ratio, sparsityEfficiencyMult: sparsity,
@@ -1027,8 +1307,12 @@ export class Simulator {
       meanHeatMult: base <= 0 ? 0 : raw / base,
       meanEfficiency: base <= 0 ? 0 : (sfr ? effective / base : (eff * sparsity) / base),
       disconnectedFuelClusters: disconnected, stable,
-      coolantInput, outputFluid, outputFluidName, rfPerTick: rf, fuelPerHour, fuelUnit: sfr ? 'ingots/h' : 'mB/h',
-      fuelBreakdown: usage, hotCoolant, meanHeatingSpeedMultiplier: meanHSM, clusters,
+      coolantInput, outputFluid, outputFluidName, rfPerTick: rf, fuelPerHour, fuelUnit: reactor === 'msr' ? 'mB/h' : 'ingots/h',
+      fuelBreakdown: usage, hotCoolant, meanHeatingSpeedMultiplier: meanHSM,
+      shields, activeShields, shieldRawHeating: shieldRaw, shieldEffectiveHeating: shieldEff,
+      irradiators, activeIrradiators: activeIrr, irradiatorFlux: irrFluxSum, irradiatorRecipe: irr.id,
+      irradiatorItemsPerHour: (72000 * irrFluxSum) / irr.fluxPerItem,
+      clusters,
     };
   }
 }

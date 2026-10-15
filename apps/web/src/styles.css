@@ -25,7 +25,7 @@ header { display: flex; align-items: center; gap: 16px; padding: 8px 16px; borde
 .jobbar.cancelled .bar div { background: var(--warn); }
 .error { background: #3f1d1d; color: #fecaca; padding: 6px 16px; cursor: pointer; }
 .fatal { padding: 40px; font-size: 15px; }
-main { display: grid; grid-template-columns: 300px minmax(0, 1fr) 370px; grid-template-rows: minmax(0, 1fr); gap: 0; flex: none; min-height: 640px; height: calc(100vh - 44px); }
+main { display: grid; grid-template-columns: 340px minmax(0, 1fr) 370px; grid-template-rows: minmax(0, 1fr); gap: 0; flex: none; min-height: 640px; height: calc(100vh - 44px); }
 aside { min-height: 0; overflow-y: auto; border-right: 1px solid var(--line); }
 aside.right { border-right: none; border-left: 1px solid var(--line); padding: 10px; }
 .panel { padding: 12px 14px; }
@@ -35,6 +35,7 @@ aside.right { border-right: none; border-left: 1px solid var(--line); padding: 1
 .seg { display: flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
 .seg button { flex: 1; border: none; border-radius: 0; background: transparent; padding: 6px 4px; color: var(--muted); }
 .seg button.on { background: var(--panel2); color: var(--text); box-shadow: inset 0 -2px 0 var(--acc); }
+.seg.five button { font-size: 11px; padding: 6px 2px; }
 .seg.small button { padding: 4px 10px; }
 .tabs { margin-bottom: 8px; }
 .dims { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
@@ -69,16 +70,18 @@ aside.right { border-right: none; border-left: 1px solid var(--line); padding: 1
 .palette { display: flex; flex-wrap: wrap; gap: 3px; padding: 6px 12px; border-bottom: 1px solid var(--line); max-height: 92px; overflow-y: auto; }
 .palette button { display: flex; align-items: center; gap: 4px; padding: 2px 6px; font-size: 11px; }
 .palette button.on { border-color: var(--warn); background: #3a2f12; }
+/* the view scrolls; its label and the legend stay below / above it instead of floating over the layers */
+.viewwrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .view { position: relative; flex: 1; min-height: 0; overflow: auto; }
 .viewer3d { position: absolute; inset: 0; }
 .hovertip { position: absolute; top: 10px; left: 12px; background: #000a; padding: 4px 8px; border-radius: 5px; pointer-events: none; font-size: 12px; }
-.viewlabel { position: sticky; bottom: 0; left: 0; display: inline-block; margin: 8px; background: #000a; padding: 3px 8px; border-radius: 5px; color: var(--muted); font-size: 12px; position: absolute; top: auto; bottom: 34px; }
-.legend { position: absolute; bottom: 0; left: 0; right: 0; display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 6px 12px; background: #0b0f17e6; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
+.viewlabel { position: absolute; top: 8px; right: 8px; background: #000a; padding: 3px 8px; border-radius: 5px; color: var(--muted); font-size: 12px; pointer-events: none; }
+.legend { flex: none; max-height: 30%; overflow-y: auto; display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 6px 12px; background: #0b0f17e6; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
 .legend span { display: flex; align-items: center; gap: 4px; }
 .rampbar { width: 160px; height: 8px; border-radius: 4px; background: linear-gradient(90deg, #313695, #4575b4, #74add1, #fee090, #f46d43, #d73027); }
 .empty { max-width: 460px; margin: 80px auto; text-align: center; color: var(--muted); }
 .empty h3 { color: var(--text); font-size: 16px; }
-.layers { display: flex; flex-wrap: wrap; gap: 18px; padding: 14px 14px 70px; align-content: flex-start; }
+.layers { display: flex; flex-wrap: wrap; gap: 18px; padding: 14px; align-content: flex-start; }
 .layerhead { color: var(--muted); margin-bottom: 4px; font-size: 12px; }
 .lgrid { display: grid; gap: 1px; }
 .lgrid > div { display: flex; align-items: center; justify-content: center; font-weight: 600; border-radius: 2px; user-select: none; }
@@ -127,7 +130,7 @@ aside.right { border-right: none; border-left: 1px solid var(--line); padding: 1
 .rowact { white-space: nowrap; }
 .mini { padding: 1px 6px; margin-left: 3px; font-size: 11px; }
 code { background: var(--panel2); padding: 1px 5px; border-radius: 4px; }
-@media (max-width: 1200px) { main { grid-template-columns: 280px minmax(0, 1fr); grid-template-rows: 80vh auto; height: auto; } aside.right { grid-column: 1 / -1; border-left: none; border-top: 1px solid var(--line); } .view { min-height: 560px; } }
+@media (max-width: 1200px) { main { grid-template-columns: 320px minmax(0, 1fr); grid-template-rows: 80vh auto; height: auto; } aside.right { grid-column: 1 / -1; border-left: none; border-top: 1px solid var(--line); } .viewwrap { min-height: 560px; } }
 
 .turbine .tsteam { display: flex; justify-content: space-between; gap: 10px; align-items: flex-end; }
 .turbine .tsteam input { width: 90px; }

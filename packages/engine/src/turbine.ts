@@ -7,7 +7,7 @@
  * bearings (sw x sw each, centered) and the dynamo coils. Each of the L interior layers is one blade set
  * of a single type (or a stator): 4 arms of (bladeLength x sw) around the sw x sw shaft; corners stay empty.
  */
-import { FISSION_CONFIG, SFR_COOLANTS } from './components.js';
+import { FISSION_CONFIG, SFR_COOLANTS, type ReactorType } from './components.js';
 
 export const TURBINE_CONFIG = {
   minSize: 1, maxSize: 24, // turbine_min_size / turbine_max_size
@@ -45,6 +45,8 @@ export const TURBINE_FLUIDS = [
   { id: 'high_pressure_steam', name: 'High Pressure Steam', powerPerMB: 16, expansion: 4, product: 'Exhaust Steam', productPerMB: 4 },
   { id: 'low_pressure_steam', name: 'Low Pressure Steam', powerPerMB: 4, expansion: 2, product: 'Low Quality Steam', productPerMB: 2 },
   { id: 'steam', name: 'Steam', powerPerMB: 4, expansion: 2, product: 'Low Quality Steam', productPerMB: 2 },
+  // pebble-bed gas coolers' hot gases (all sixteen share turbine_power_per_mb[3] / turbine_expansion_level[3])
+  { id: 'hot_gas', name: 'Hot Gas Coolant', powerPerMB: 32, expansion: 2, product: 'Exhaust Gas', productPerMB: 2 },
 ] as const;
 
 // wall cell codes
@@ -348,13 +350,17 @@ export interface TurbineOptimizeResult {
 }
 
 /** Steam (mB/t) a reactor's stats produce: SFR directly; MSR via an ideal heat exchanger (hot NaK -> water -> HP steam). */
-export function reactorSteam(stats: { reactor: 'sfr' | 'msr'; outputFluid: number; hotCoolant: Record<string, number> }): number {
-  if (stats.reactor === 'sfr') return stats.outputFluid;
+export function reactorSteam(stats: { reactor: ReactorType; outputFluid: number; hotCoolant: Record<string, number> }): number {
+  // SFR: high pressure steam; PBR: hot gas coolants drive the turbine directly
+  if (stats.reactor !== 'msr') return stats.outputFluid;
   const water = SFR_COOLANTS[0];
   const hot = Object.values(stats.hotCoolant).reduce((a, b) => a + b, 0);
   const heat = hot * FISSION_CONFIG.heaterCoolantHeatPerMB * TURBINE_CONFIG.heatExchangerNakHeatMult;
   return (heat / water.heatPerMB) * (water.outputPerRecipe / water.inputPerRecipe);
 }
+
+/** Turbine fluid a reactor type produces (TURBINE_FLUIDS id). */
+export const reactorTurbineFluid = (reactor: ReactorType) => (reactor === 'pbr' ? 'hot_gas' : 'high_pressure_steam');
 
 interface BladePlan { blades: BladeId[]; q: number; nb: number; eml: number; maxBlade: number }
 

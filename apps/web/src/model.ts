@@ -1,4 +1,4 @@
-import type { BlockInfo, ReactorStats, ReactorType } from '@ncopt/engine';
+import type { BlockInfo, ReactorStats, ReactorType, IrradiatorRecipeId } from '@ncopt/engine';
 import { blockColor, clusterColor, ramp } from './blocks';
 
 export interface LayoutEntry {
@@ -11,6 +11,9 @@ export interface LayoutEntry {
   /** multi-fuel layouts: fuel per slot (fuelIds[0] = fuelId) */
   fuelIds?: string[];
   sfrCoolant?: string;
+  /** irradiator recipe / decay mechanics the layout was designed with */
+  irradiatorRecipe?: IrradiatorRecipeId;
+  decayMechanics?: boolean;
   grid: number[];
   stats: ReactorStats;
   createdAt: number;
@@ -25,18 +28,21 @@ export const idx = (dims: [number, number, number], x: number, y: number, z: num
 
 export interface CellLook { color: string; dim: boolean }
 
-export function cellLook(b: number, info: BlockInfo | undefined, mode: ColorMode, maxEff: number, maxFlux: number): CellLook {
+export function cellLook(b: number, info: BlockInfo | undefined, mode: ColorMode, maxEff: number, maxFlux: number, reactor: ReactorType): CellLook {
   const active = info ? info.active : true;
   switch (mode) {
-    case 'block': return { color: blockColor(b), dim: !active };
+    case 'block': return { color: blockColor(b, reactor), dim: !active };
     case 'state': return { color: active ? '#22c55e' : '#ef4444', dim: false };
     case 'cluster': return { color: clusterColor(info?.cluster ?? -1), dim: !active };
     case 'efficiency':
       if (info?.fuel) return { color: info.fuel.running ? ramp(info.fuel.efficiency / Math.max(1e-9, maxEff)) : '#3f3f46', dim: !info.fuel.running };
-      return { color: blockColor(b), dim: true };
-    case 'flux':
-      if (info?.fuel) return { color: ramp(info.fuel.bunch.flux / Math.max(1, maxFlux)), dim: !info.fuel.running };
-      return { color: blockColor(b), dim: true };
+      return { color: blockColor(b, reactor), dim: true };
+    case 'flux': {
+      // fuel: bunch flux; irradiators and shields: the flux they receive
+      const flux = info?.fuel ? info.fuel.bunch.flux : info?.irradiator ? info.irradiator.flux : info?.shield ? info.shield.flux : null;
+      if (flux !== null) return { color: ramp(flux / Math.max(1, maxFlux)), dim: !active };
+      return { color: blockColor(b, reactor), dim: true };
+    }
   }
 }
 

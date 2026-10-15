@@ -33,7 +33,7 @@ export default function LayerGrid({ layout, infos, mode, maxEff, maxFlux, select
               const i = gx + X * (y + Y * gz), b = layout.grid[i];
               const info = infos.get(i);
               if (b === 0) return <div key={k} className={`cell air ${selected === i ? 'sel' : ''} ${editing ? 'edit' : ''}`} onClick={() => onCell(i, false)} onContextMenu={(e) => { e.preventDefault(); onCell(i, true); }} title={`Air (${gx}, ${y}, ${gz})`} />;
-              const look = cellLook(b, info, mode, maxEff, maxFlux);
+              const look = cellLook(b, info, mode, maxEff, maxFlux, layout.reactor);
               return (
                 <div key={k} className={`cell ${look.dim ? 'dim' : ''} ${selected === i ? 'sel' : ''} ${editing ? 'edit' : ''}`}
                   style={{ background: look.color, color: textColor(look.color) }}

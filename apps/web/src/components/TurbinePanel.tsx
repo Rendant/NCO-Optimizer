@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  reactorSteam, evaluateWall, TURBINE_BLADES, TURBINE_COILS, TURBINE_FLUIDS, W_BEARING, W_CONNECTOR, W_COIL0, W_VALVE,
+  reactorSteam, reactorTurbineFluid, evaluateWall, TURBINE_BLADES, TURBINE_COILS, TURBINE_FLUIDS, W_BEARING, W_CONNECTOR, W_COIL0, W_VALVE,
   type ReactorStats, type TurbineOptimizeResult, type TurbineCandidate, type BladeId,
 } from '@ncopt/engine';
 import { fmt, pct } from '../model';
@@ -31,17 +31,19 @@ export default function TurbinePanel({ stats, layoutKey, settings, setSettings, 
   const [err, setErr] = useState<string | null>(null);
   const [view, setView] = useState(0); // index into alternatives (-1 = best)
   const autoSteam = stats.reactor === 'msr' && hxSteam != null ? hxSteam : reactorSteam(stats);
+  const fluidId = reactorTurbineFluid(stats.reactor);
+  const fluidName = TURBINE_FLUIDS.find((f) => f.id === fluidId)!.name.toLowerCase();
   const steam = settings.steamOverride === '' ? autoSteam : Number(settings.steamOverride);
   const set = <K extends keyof TurbineSettings>(k: K, v: TurbineSettings[K]) => setSettings({ ...settings, [k]: v });
   const toggle = (list: string[], id: string) => (list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
 
   const run = async () => {
-    if (!(steam > 0)) { setErr('This layout produces no steam.'); return; }
+    if (!(steam > 0)) { setErr(`This layout produces no ${fluidName}.`); return; }
     setBusy(true); setErr(null);
     try {
       const r = await fetch('/api/turbine', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ steamRate: steam, fluidId: 'high_pressure_steam', allowedBlades: settings.allowedBlades, allowStators: settings.allowStators, allowedCoils: settings.allowedCoils, maxDiameter: settings.maxDiameter, maxLength: settings.maxLength, turbines: settings.turbines }),
+        body: JSON.stringify({ steamRate: steam, fluidId, allowedBlades: settings.allowedBlades, allowStators: settings.allowStators, allowedCoils: settings.allowedCoils, maxDiameter: settings.maxDiameter, maxLength: settings.maxLength, turbines: settings.turbines }),
       });
       const body = await r.json();
       if (!r.ok) throw new Error(body.error ?? `HTTP ${r.status}`);
@@ -56,7 +58,7 @@ export default function TurbinePanel({ stats, layoutKey, settings, setSettings, 
   return (
     <div className="panel turbine">
       <div className="tsteam">
-        <div><div className="muted small">Steam from reactor</div><b>{fmt(autoSteam, 1)} mB/t</b> <span className="muted small">high-pressure steam{stats.reactor === 'msr' ? (hxSteam != null ? ' from the designed heat exchanger' : ' (lossless heat-exchanger estimate — design one in the Heat exchanger tab)') : ''}</span></div>
+        <div><div className="muted small">{stats.reactor === 'pbr' ? 'Hot gas from reactor' : 'Steam from reactor'}</div><b>{fmt(autoSteam, 1)} mB/t</b> <span className="muted small">{fluidName}{stats.reactor === 'msr' ? (hxSteam != null ? ' from the designed heat exchanger' : ' (lossless heat-exchanger estimate — design one in the Heat exchanger tab)') : stats.reactor === 'pbr' ? ' (all gas types share the turbine stats: 32 RF/mB, expansion 2)' : ''}</span></div>
         <label className="small">Override mB/t <input type="number" min={1} placeholder="auto" value={settings.steamOverride} onChange={(e) => set('steamOverride', e.target.value === '' ? '' : Number(e.target.value))} /></label>
       </div>
       <details className="tset">

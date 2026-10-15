@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { fromLayoutJSON, toLayoutJSON, isFuel, fuelSlot, type BlockInfo, type LayoutJSON } from '@ncopt/engine';
+import { fromLayoutJSON, toLayoutJSON, isFuel, fuelSlot, blockName, type BlockInfo, type LayoutJSON, type ReactorType } from '@ncopt/engine';
 import { api, type JobSnapshot, type LibraryEntry, type Meta, type SimDetail } from './api';
 import ProgressChart from './components/ProgressChart';
 import LibraryPanel from './components/LibraryPanel';
@@ -13,7 +13,7 @@ import TurbinePanel, { defaultTurbineSettings, type TurbineSettings } from './co
 import HXPanel, { defaultHxSettings, type HxSettings } from './components/HXPanel';
 import type { HxDesignResult } from '@ncopt/engine';
 import type { TurbineOptimizeResult } from '@ncopt/engine';
-import { blockColor, blockList } from './blocks';
+import { blockColor, blockList, shortName } from './blocks';
 import { download, fmt, pct, type ColorMode, type LayoutEntry } from './model';
 
 const MODS_ONLY = new Set(['moderator']);
@@ -53,7 +53,8 @@ export default function App() {
       setCfg({
         reactor: 'sfr', dims: [5, 5, 5], fuelId: 'leu-235-oxide', sfrCoolant: 'water', objective: 'output',
         allowedModerators: m.moderators.map((x) => x.id), allowedReflectors: m.reflectors.map((x) => x.id),
-        allowedCoolers: m.sinks.map((x) => x.id), allowConductors: false, maxFuel: '', minEfficiency: '',
+        allowedCoolers: m.sinks.map((x) => x.id), allowConductors: false, maxFuel: '', minEfficiency: '', minIrradiatorFlux: '',
+        allowedShields: [], allowIrradiators: false, irradiatorRecipe: 'thorium', decayMechanics: false, controllable: false,
         symmetry: { x: true, y: true, z: true }, timeLimitSec: 20, workers: m.maxWorkers, seed: '', sourceType: 'californium', cooperate: true, useLibrary: true,
       });
     }).catch((e) => setError(`Cannot reach the API: ${e.message}`));
@@ -64,19 +65,22 @@ export default function App() {
   const selected = layouts.find((l) => l.id === selectedId) ?? null;
   const live: LayoutEntry | null = running && job?.best ? {
     id: 'live', name: 'Live best', origin: 'live', reactor: job.cfg.reactor, dims: job.cfg.dims, fuelId: job.cfg.fuelId, fuelIds: job.cfg.fuelIds, sfrCoolant: job.cfg.sfrCoolant,
-    grid: job.best.grid, stats: job.best.stats, createdAt: Date.now(),
+    irradiatorRecipe: job.cfg.irradiatorRecipe, decayMechanics: job.cfg.decayMechanics, grid: job.best.grid, stats: job.best.stats, createdAt: Date.now(),
   } : null;
   const shown = live ?? selected;
   const fuelName = useCallback((id: string) => meta?.fuels.find((f) => f.id === id)?.name ?? id, [meta]);
   const fuelsLabel = (l: { fuelId: string; fuelIds?: string[] }) => (l.fuelIds?.length ? l.fuelIds : [l.fuelId]).map(fuelName).join(' + ');
 
   // full simulation (stats + per-block explanation + source plan) of the shown layout
-  const gridKey = shown && shown.origin !== 'live' ? `${shown.id}|${shown.grid.join('')}|${cfg?.sourceType}` : '';
+  const gridKey = shown && shown.origin !== 'live' ? `${shown.id}|${shown.grid.join(',')}|${cfg?.sourceType}|${shown.irradiatorRecipe}|${shown.decayMechanics}` : '';
   useEffect(() => {
     if (!shown || shown.origin === 'live' || !cfg) { if (!shown) setDetail(null); return; }
     let cancelled = false;
     const t = setTimeout(() => {
-      api.simulate({ reactor: shown.reactor, dims: shown.dims, fuelId: shown.fuelId, fuelIds: shown.fuelIds, sfrCoolant: shown.sfrCoolant, grid: shown.grid, sourceType: cfg.sourceType })
+      api.simulate({
+        reactor: shown.reactor, dims: shown.dims, fuelId: shown.fuelId, fuelIds: shown.fuelIds, sfrCoolant: shown.sfrCoolant, grid: shown.grid, sourceType: cfg.sourceType,
+        irradiatorRecipe: shown.irradiatorRecipe, decayMechanics: shown.decayMechanics,
+      })
         .then((d) => {
           if (cancelled) return;
           setDetail(d);
@@ -88,7 +92,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gridKey]);
 
-  const turbineKey = shown && shown.origin !== 'live' ? `${shown.id}|${shown.grid.join('')}` : '';
+  const turbineKey = shown && shown.origin !== 'live' ? `${shown.id}|${shown.grid.join(',')}` : '';
   // MSR: the turbine is designed for the heat exchanger's steam once one has been designed
   const hxSteam = shown?.reactor === 'msr' && hxResults[turbineKey] ? hxResults[turbineKey]!.best.steam : null;
   const tKey = hxSteam != null ? `${turbineKey}|hx${hxSteam.toFixed(3)}` : turbineKey;
@@ -99,10 +103,11 @@ export default function App() {
     return m;
   }, [detail, detailValid]);
   const maxEff = useMemo(() => Math.max(0, ...[...infos.values()].map((b) => b.fuel?.efficiency ?? 0)), [infos]);
-  const maxFlux = useMemo(() => Math.max(1, ...[...infos.values()].map((b) => b.fuel?.bunch.flux ?? 0)), [infos]);
+  const maxFlux = useMemo(() => Math.max(1, ...[...infos.values()].map((b) => b.fuel?.bunch.flux ?? b.irradiator?.flux ?? b.shield?.flux ?? 0)), [infos]);
 
   // server-side library for the current size / fuel / coolant / objective (refreshed on change and after each job)
-  const libKey = cfg ? JSON.stringify([cfg.reactor, cfg.dims, cfg.fuelId, cfg.fuelIds, cfg.sfrCoolant, cfg.objective, cfg.allowedModerators, cfg.allowedReflectors, cfg.allowedCoolers, cfg.allowConductors]) : '';
+  const libKey = cfg ? JSON.stringify([cfg.reactor, cfg.dims, cfg.fuelId, cfg.fuelIds, cfg.sfrCoolant, cfg.objective, cfg.allowedModerators, cfg.allowedReflectors, cfg.allowedCoolers, cfg.allowConductors,
+    cfg.allowedShields, cfg.allowIrradiators, cfg.irradiatorRecipe, cfg.decayMechanics, cfg.controllable]) : '';
   useEffect(() => {
     if (!cfg) return;
     let cancelled = false;
@@ -114,9 +119,10 @@ export default function App() {
   const libraryLayout = async (e: LibraryEntry): Promise<LayoutEntry | null> => {
     if (!cfg) return null;
     try {
-      const d = await api.simulate({ reactor: cfg.reactor, dims: cfg.dims, fuelId: cfg.fuelId, fuelIds: cfg.fuelIds, sfrCoolant: cfg.sfrCoolant, grid: e.grid });
+      const settings = { irradiatorRecipe: cfg.irradiatorRecipe, decayMechanics: cfg.decayMechanics };
+      const d = await api.simulate({ reactor: cfg.reactor, dims: cfg.dims, fuelId: cfg.fuelId, fuelIds: cfg.fuelIds, sfrCoolant: cfg.sfrCoolant, grid: e.grid, ...settings });
       const l: LayoutEntry = { id: `lib-${e.id}-${Date.now()}`, name: `Library ${Math.round(e.effectiveHeating)} H/t`, origin: 'library', reactor: cfg.reactor, dims: [...cfg.dims] as [number, number, number],
-        fuelId: cfg.fuelId, fuelIds: cfg.fuelIds, sfrCoolant: cfg.sfrCoolant, grid: e.grid, stats: d.stats, createdAt: Date.now(), note: cfg.objective };
+        fuelId: cfg.fuelId, fuelIds: cfg.fuelIds, sfrCoolant: cfg.sfrCoolant, ...settings, grid: e.grid, stats: d.stats, createdAt: Date.now(), note: cfg.objective };
       setLayouts((ls) => [l, ...ls]); setSelectedId(l.id); setSelBlock(null);
       return l;
     } catch (err: any) { setError(err.message); return null; }
@@ -128,7 +134,11 @@ export default function App() {
     setError(null);
     try {
       const body = { ...cfg, initial: from ? from.grid : undefined };
-      if (from) { body.dims = from.dims; body.reactor = from.reactor; body.fuelId = from.fuelId; body.fuelIds = from.fuelIds; if (from.sfrCoolant) body.sfrCoolant = from.sfrCoolant; }
+      if (from) {
+        body.dims = from.dims; body.reactor = from.reactor; body.fuelId = from.fuelId; body.fuelIds = from.fuelIds; if (from.sfrCoolant) body.sfrCoolant = from.sfrCoolant;
+        if (from.irradiatorRecipe) body.irradiatorRecipe = from.irradiatorRecipe;
+        if (from.decayMechanics !== undefined) body.decayMechanics = from.decayMechanics;
+      }
       const { jobId } = await api.optimize(body);
       const n = ++runCounter.current;
       unwatch.current?.();
@@ -136,7 +146,8 @@ export default function App() {
         setJob(snap);
         const res = (snap.results ?? []).map((r, k): LayoutEntry => ({
           id: `${r.id}-${k}`, name: `Run ${n}${(snap.results?.length ?? 0) > 1 ? String.fromCharCode(97 + k) : ''}`, origin: 'optimizer',
-          reactor: snap.cfg.reactor, dims: snap.cfg.dims, fuelId: snap.cfg.fuelId, fuelIds: snap.cfg.fuelIds, sfrCoolant: snap.cfg.sfrCoolant, grid: r.grid, stats: r.stats,
+          reactor: snap.cfg.reactor, dims: snap.cfg.dims, fuelId: snap.cfg.fuelId, fuelIds: snap.cfg.fuelIds, sfrCoolant: snap.cfg.sfrCoolant,
+          irradiatorRecipe: snap.cfg.irradiatorRecipe, decayMechanics: snap.cfg.decayMechanics, grid: r.grid, stats: r.stats,
           createdAt: Date.now(), note: `${snap.cfg.objective}, seed ${r.seed}${r.valid ? '' : ', constraints not met'}`,
         }));
         if (res.length) { setLayouts((ls) => [...res, ...ls]); setSelectedId(res[0].id); setSelBlock(null); }
@@ -162,12 +173,15 @@ export default function App() {
       const j = JSON.parse(await f.text()) as LayoutJSON;
       if (j.format !== 'ncopt-layout') throw new Error('Not an ncopt layout file');
       const grid = Array.from(fromLayoutJSON(j));
-      const d = await api.simulate({ reactor: j.reactor, dims: j.dims, fuelId: j.fuelId, fuelIds: j.fuelIds, sfrCoolant: j.sfrCoolant, grid });
-      const e: LayoutEntry = { id: `imp-${Date.now()}`, name: f.name.replace(/\.json$/, ''), origin: 'import', reactor: j.reactor, dims: j.dims, fuelId: j.fuelId, fuelIds: j.fuelIds, sfrCoolant: j.sfrCoolant, grid, stats: d.stats, createdAt: Date.now() };
+      const d = await api.simulate({ reactor: j.reactor, dims: j.dims, fuelId: j.fuelId, fuelIds: j.fuelIds, sfrCoolant: j.sfrCoolant, grid, irradiatorRecipe: j.irradiatorRecipe });
+      const e: LayoutEntry = {
+        id: `imp-${Date.now()}`, name: f.name.replace(/\.json$/, ''), origin: 'import', reactor: j.reactor, dims: j.dims, fuelId: j.fuelId, fuelIds: j.fuelIds, sfrCoolant: j.sfrCoolant,
+        irradiatorRecipe: j.irradiatorRecipe, grid, stats: d.stats, createdAt: Date.now(),
+      };
       setLayouts((ls) => [e, ...ls]); setSelectedId(e.id);
     } catch (e: any) { setError(`Import failed: ${e.message}`); }
   };
-  const exportLayout = (l: LayoutEntry) => download(`${l.name.replace(/\W+/g, '_')}.json`, JSON.stringify({ ...toLayoutJSON(l.grid, l.dims, l.reactor, l.fuelId, l.sfrCoolant, l.fuelIds), stats: l.stats }, null, 1));
+  const exportLayout = (l: LayoutEntry) => download(`${l.name.replace(/\W+/g, '_')}.json`, JSON.stringify({ ...toLayoutJSON(l.grid, l.dims, l.reactor, l.fuelId, l.sfrCoolant, l.fuelIds, l.irradiatorRecipe), stats: l.stats }, null, 1));
 
   if (error && !meta) return <div className="fatal">{error}<p>Start the server with <code>npm start</code>.</p></div>;
   if (!meta || !cfg) return <div className="fatal">Loading…</div>;
@@ -192,7 +206,7 @@ export default function App() {
             <div className="bar"><div style={{ width: `${Math.min(100, (100 * elapsed) / limit)}%` }} /></div>
             <span>{job.status === 'running' ? 'Optimizing' : job.status}</span>
             <span>{fmt(job.totalEvaluations)} evals · {fmt(evalRate / 1000, 1)}k/s · {job.workers.length} workers</span>
-            {job.best && <span>best <b>{fmt(job.best.stats.effectiveHeating)} H/t</b> @ {pct(job.best.stats.meanEfficiency)}{job.cfg.objective === 'breeding' ? ` · ${fmt(job.best.stats.fuelPerHour, 1)} ${job.best.stats.fuelUnit}` : ''}{job.best.valid ? '' : ' (infeasible)'}</span>}
+            {job.best && <span>best <b>{fmt(job.best.stats.effectiveHeating)} H/t</b> @ {pct(job.best.stats.meanEfficiency)}{job.cfg.objective === 'breeding' ? ` · ${fmt(job.best.stats.fuelPerHour, 1)} ${job.best.stats.fuelUnit}` : ''}{job.cfg.objective === 'irradiation' ? ` · irradiator flux ${fmt(job.best.stats.irradiatorFlux)}` : ''}{job.best.valid ? '' : ' (infeasible)'}</span>}
           </div>
         )}
         <label className="btn">Import JSON<input type="file" accept="application/json" hidden onChange={(e) => e.target.files?.[0] && importFile(e.target.files[0])} /></label>
@@ -232,11 +246,12 @@ export default function App() {
             <div className="palette">
               {palette.map((b) => (
                 <button key={b.id} className={brush === b.id ? 'on' : ''} title={b.name} onClick={() => setBrush(b.id)}>
-                  <i style={{ background: blockColor(b.id) }} />{b.name.replace(' Heat Sink', '').replace(' Coolant Heater', '').replace(' Block', '')}
+                  <i style={{ background: blockColor(b.id, shown?.reactor ?? cfg.reactor) }} />{shortName(b.name)}
                 </button>
               ))}
             </div>
           )}
+          <div className="viewwrap">
           <div className="view">
             {!shown ? (
               <div className="empty">
@@ -250,6 +265,7 @@ export default function App() {
             ) : (
               <LayerGrid layout={shown} infos={infos} mode={mode} maxEff={maxEff} maxFlux={maxFlux} selected={selBlock} onCell={onCell} sources={plan?.sources ?? []} editing={editing} />
             )}
+          </div>
             {shown && <div className="viewlabel">{shown.name} · {shown.dims.join('×')} · {fuelsLabel(shown)}{shown.origin === 'live' ? ' · updating live' : ''}</div>}
             <Legend mode={mode} grid={shown?.grid} reactor={shown?.reactor ?? 'sfr'} fuelNames={shownFuelIds.length > 1 ? shownFuelIds.map(fuelName) : undefined} />
           </div>
@@ -274,9 +290,10 @@ export default function App() {
               }} />
           ) : <div className="panel muted">{running ? 'Wait for the optimization to finish, then select a layout.' : 'Select a layout first.'}</div>) : rightTab === 'stats' ? (stats && shownFuel ? (
             <StatsPanel stats={stats} blocks={detailValid ? detail!.blocks : null} plan={plan} sourceName={meta.sources.find((s) => s.id === cfg.sourceType)?.name ?? ''}
+              shutdown={detailValid ? detail!.shutdown : null} decay={detailValid ? detail!.decay : null}
               fuelName={fuelsLabel(shown!)} fuelBaseHeat={shownFuel.heat} fuelBaseEff={shownFuel.efficiency} />
           ) : <div className="panel muted">No layout selected.</div>) : (
-            <Inspector info={selBlock != null ? infos.get(selBlock) ?? null : null} air={selBlock != null && shown && !infos.has(selBlock) && shown.grid[selBlock] === 0 ? [selBlock % shown.dims[0], Math.floor(selBlock / shown.dims[0]) % shown.dims[1], Math.floor(selBlock / (shown.dims[0] * shown.dims[1]))] : undefined} onJump={(p) => shown && setSelBlock(p[0] + shown.dims[0] * (p[1] + shown.dims[1] * p[2]))} />
+            <Inspector reactor={shown?.reactor ?? cfg.reactor} info={selBlock != null ? infos.get(selBlock) ?? null : null} air={selBlock != null && shown && !infos.has(selBlock) && shown.grid[selBlock] === 0 ? [selBlock % shown.dims[0], Math.floor(selBlock / shown.dims[0]) % shown.dims[1], Math.floor(selBlock / (shown.dims[0] * shown.dims[1]))] : undefined} onJump={(p) => shown && setSelBlock(p[0] + shown.dims[0] * (p[1] + shown.dims[1] * p[2]))} />
           )}
         </aside>
       </main>
@@ -290,18 +307,17 @@ export default function App() {
   );
 }
 
-function Legend({ mode, grid, reactor, fuelNames }: { mode: ColorMode; grid?: number[]; reactor: 'sfr' | 'msr'; fuelNames?: string[] }) {
+function Legend({ mode, grid, reactor, fuelNames }: { mode: ColorMode; grid?: number[]; reactor: ReactorType; fuelNames?: string[] }) {
   if (!grid) return null;
   if (mode === 'efficiency' || mode === 'flux') return <div className="legend"><span>low</span><div className="rampbar" /><span>high {mode}</span></div>;
   if (mode === 'state') return <div className="legend"><span><i style={{ background: '#22c55e' }} />active</span><span><i style={{ background: '#ef4444' }} />inactive</span></div>;
   if (mode === 'cluster') return <div className="legend"><span>colors = heat clusters</span></div>;
   const counts = new Map<number, number>();
   for (const b of grid) if (b) counts.set(b, (counts.get(b) ?? 0) + 1);
-  const names = blockList(reactor);
   return (
     <div className="legend">
       {[...counts.entries()].sort((a, b) => a[0] - b[0]).map(([b, n]) => (
-        <span key={b}><i style={{ background: blockColor(b) }} />{fuelNames && isFuel(b) ? fuelNames[fuelSlot(b)] : names[b].name.replace(' Heat Sink', '').replace(' Coolant Heater', '')} ×{n}</span>
+        <span key={b}><i style={{ background: blockColor(b, reactor) }} />{fuelNames && isFuel(b) ? fuelNames[fuelSlot(b)] : shortName(blockName(b, reactor))} ×{n}</span>
       ))}
     </div>
   );

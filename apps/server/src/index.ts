@@ -6,8 +6,10 @@ import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  FUELS, MODERATORS, REFLECTORS, SOURCES, SFR_COOLANTS, COOLER_NAMES, HEATER_NAMES, HEATER_COOLANTS, COOLING_RATES, SINK_RULES, HEATER_RULES,
-  FISSION_CONFIG, NUM_BLOCKS, TURBINE_BLADES, TURBINE_STATOR, TURBINE_COILS, TURBINE_CONNECTOR, TURBINE_FLUIDS, TURBINE_CONFIG, blockKey, blockName, Simulator, explainAll, planSources, resolveFuel, resolveFuels, isFuel, fuelSlot, toLayoutJSON,
+  FUELS, MODERATORS, REFLECTORS, SHIELDS, IRRADIATOR_RECIPES, SOURCES, SFR_COOLANTS, COOLER_NAMES, HEATER_NAMES, HEATER_COOLANTS, COOLING_RATES, SINK_RULES, HEATER_RULES,
+  GAS_COOLER_NAMES, GAS_COOLING_RATES, GAS_COOLER_RULES, GAS_COOLANTS, DECAY_CONFIG, COOLER0, SHIELD0, IRRADIATOR,
+  FISSION_CONFIG, NUM_BLOCKS, TURBINE_BLADES, TURBINE_STATOR, TURBINE_COILS, TURBINE_CONNECTOR, TURBINE_FLUIDS, TURBINE_CONFIG, blockKey, blockName, isValidBlock,
+  Simulator, explainAll, planSources, shutdownCheck, decayReport, resolveFuels, isFuel, fuelSlot, toLayoutJSON, type ReactorType,
 } from '@ncopt/engine';
 import { JobManager } from './jobs.js';
 import { Library, libraryKey } from './library.js';
@@ -32,29 +34,41 @@ app.get('/api/meta', async () => ({
   sources: SOURCES,
   sfrCoolants: SFR_COOLANTS,
   config: FISSION_CONFIG,
-  sinks: COOLER_NAMES.map((id, i) => ({ id, block: 8 + i, cooling: COOLING_RATES[i], rule: SINK_RULES[i] })),
-  heaters: HEATER_NAMES.map((id, i) => ({ id, block: 8 + i, cooling: COOLING_RATES[i], rule: HEATER_RULES[i], coolant: HEATER_COOLANTS[i] })),
-  blocks: {
-    sfr: Array.from({ length: NUM_BLOCKS }, (_, b) => ({ id: b, key: blockKey(b, 'sfr'), name: blockName(b, 'sfr') })),
-    msr: Array.from({ length: NUM_BLOCKS }, (_, b) => ({ id: b, key: blockKey(b, 'msr'), name: blockName(b, 'msr') })),
-  },
+  sinks: COOLER_NAMES.map((id, i) => ({ id, block: COOLER0 + i, cooling: COOLING_RATES[i], rule: SINK_RULES[i] })),
+  heaters: HEATER_NAMES.map((id, i) => ({ id, block: COOLER0 + i, cooling: COOLING_RATES[i], rule: HEATER_RULES[i], coolant: HEATER_COOLANTS[i] })),
+  gasCoolers: GAS_COOLER_NAMES.map((id, i) => ({ id, block: COOLER0 + i, cooling: GAS_COOLING_RATES[i], rule: GAS_COOLER_RULES[i], coolant: GAS_COOLANTS[i] })),
+  shields: SHIELDS.map((s, i) => ({ ...s, block: SHIELD0 + i })),
+  irradiator: { block: IRRADIATOR, recipes: IRRADIATOR_RECIPES },
+  decay: DECAY_CONFIG,
+  blocks: Object.fromEntries((['sfr', 'msr', 'pbr'] as ReactorType[]).map((r) => [r, Array.from({ length: NUM_BLOCKS }, (_, b) => b)
+    .filter((b) => isValidBlock(b, r)).map((b) => ({ id: b, key: blockKey(b, r), name: blockName(b, r) }))])),
   maxWorkers: Math.max(1, os.availableParallelism?.() ?? os.cpus().length),
   turbine: { blades: TURBINE_BLADES, stator: TURBINE_STATOR, coils: TURBINE_COILS, connector: TURBINE_CONNECTOR, fluids: TURBINE_FLUIDS, config: TURBINE_CONFIG },
 }));
 
-/** Full simulation of a layout: stats, per-block explanation and a neutron-source plan. */
+/**
+ * Full simulation of a layout: stats, per-block explanation, a neutron-source plan, the shutdown check (with shields)
+ * and the decay report (with decay mechanics).
+ */
 app.post('/api/simulate', async (req) => {
   const body = req.body as any;
   const base = parseBase(body);
-  const grid = parseGrid(body.grid, base.dims[0] * base.dims[1] * base.dims[2]);
+  const grid = parseGrid(body.grid, base.dims[0] * base.dims[1] * base.dims[2], base.reactor);
   const sourceType = parseSource(body.sourceType);
   const fuels = resolveFuels(base);
   for (const b of grid) if (isFuel(b) && fuelSlot(b) >= fuels.length) throw new BadRequest(`layout uses fuel #${fuelSlot(b) + 1} but only ${fuels.length} fuel(s) are listed`);
-  const sim = new Simulator(base.dims, { reactor: base.reactor, fuel: fuels[0], fuels, sfrCoolant: base.sfrCoolant });
+  const sim = new Simulator(base.dims, {
+    reactor: base.reactor, fuel: fuels[0], fuels, sfrCoolant: base.sfrCoolant, irradiatorRecipe: base.irradiatorRecipe, decayMechanics: base.decayMechanics,
+  });
   const stats = sim.evaluate(grid);
   const blocks = explainAll(sim).filter((b) => b.block !== 0);
+  const decay = base.decayMechanics ? decayReport(sim) : null;
+  const shutdown = stats.shields > 0 ? shutdownCheck(new Simulator(base.dims, sim.opts), grid) : null;
   const plan = planSources(new Simulator(base.dims, sim.opts), grid, sourceType);
-  return { stats, blocks, sourcePlan: plan, layout: toLayoutJSON(grid, base.dims, base.reactor, base.fuelId, base.sfrCoolant, base.fuelIds) };
+  return {
+    stats, blocks, sourcePlan: plan, shutdown, decay,
+    layout: toLayoutJSON(grid, base.dims, base.reactor, base.fuelId, base.sfrCoolant, base.fuelIds, base.irradiatorRecipe),
+  };
 });
 
 /** Design the best steam turbine(s) for a steam flow (runs in a worker thread, ~0.3-3 s). */

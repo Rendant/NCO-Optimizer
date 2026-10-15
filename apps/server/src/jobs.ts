@@ -83,8 +83,9 @@ export class JobManager {
       ? this.library.forConfig(cfg).filter((e) => e.compatible).slice(0, 4).map((e) => e.grid) : [];
     job.librarySeeds = seedLayouts.length;
     const N = cfg.dims[0] * cfg.dims[1] * cfg.dims[2];
-    // value plotted in the progress chart: fuel use for breeding, effective heat otherwise
-    const metric = (st: { effectiveHeating: number; fuelPerHour: number }) => (cfg.objective === 'breeding' ? st.fuelPerHour : st.effectiveHeating);
+    // value plotted in the progress chart: fuel use for breeding, irradiator flux for irradiation, effective heat otherwise
+    const metric = (st: { effectiveHeating: number; fuelPerHour: number; irradiatorFlux: number }) =>
+      (cfg.objective === 'breeding' ? st.fuelPerHour : cfg.objective === 'irradiation' ? st.irradiatorFlux : st.effectiveHeating);
     const exchange = options.cooperate && workers > 1 ? createExchange(N) : undefined;
     this.jobs.set(id, job);
     this.gc();
@@ -124,8 +125,8 @@ export class JobManager {
           state.phase = 'done'; state.evaluations = r.evaluations; state.elapsedMs = r.elapsedMs;
           state.bestFitness = r.fitness; state.bestValid = r.valid; state.effectiveHeating = r.stats.effectiveHeating; state.meanEfficiency = r.stats.meanEfficiency;
           pushHistory(state.history, [r.elapsedMs, r.valid ? metric(r.stats) : 0, r.valid ? 1 : 0]);
-          const key = r.grid.join('');
-          if (!job.results.some((x) => x.grid.join('') === key)) job.results.push({ id: `${id.slice(0, 8)}-${seed}`, seed, grid: r.grid, stats: r.stats, fitness: r.fitness, valid: r.valid });
+          const key = r.grid.join(',');
+          if (!job.results.some((x) => x.grid.join(',') === key)) job.results.push({ id: `${id.slice(0, 8)}-${seed}`, seed, grid: r.grid, stats: r.stats, fitness: r.fitness, valid: r.valid });
           const cand = { grid: r.grid, stats: r.stats, fitness: r.fitness, valid: r.valid };
           if (better(cand, job.best)) job.best = cand;
         } else if (m.type === 'error') {

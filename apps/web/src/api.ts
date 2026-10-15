@@ -1,4 +1,4 @@
-import type { ReactorStats, BlockInfo, SourcePlan, FuelDef, ReactorType, LayoutJSON } from '@ncopt/engine';
+import type { ReactorStats, BlockInfo, SourcePlan, FuelDef, ReactorType, LayoutJSON, ShutdownCheck, DecayReport, IrradiatorRecipeId } from '@ncopt/engine';
 
 export interface CoolerMeta { id: string; block: number; cooling: number; rule: string; coolant?: string }
 export interface Meta {
@@ -9,8 +9,14 @@ export interface Meta {
   sfrCoolants: { id: string; name: string; heatPerMB: number }[];
   sinks: CoolerMeta[];
   heaters: CoolerMeta[];
+  gasCoolers: CoolerMeta[];
+  shields: { id: string; name: string; heatPerFlux: number; efficiency: number; block: number }[];
+  irradiator: { block: number; recipes: { id: IrradiatorRecipeId; name: string; fluxPerItem: number; heatPerFlux: number; efficiency: number }[] };
   maxWorkers: number;
 }
+
+/** Simulation settings that belong to a layout besides its blocks. */
+export interface SimSettings { irradiatorRecipe?: IrradiatorRecipeId; decayMechanics?: boolean }
 
 export interface OptimizeRequest {
   reactor: ReactorType; dims: [number, number, number]; fuelId: string; sfrCoolant?: string;
@@ -18,9 +24,12 @@ export interface OptimizeRequest {
   fuelIds?: string[];
   /** multi-fuel: every fuel must be used */
   requireAllFuels?: boolean;
-  objective: 'output' | 'efficiency' | 'balanced' | 'breeding';
+  objective: 'output' | 'efficiency' | 'balanced' | 'breeding' | 'irradiation';
   allowedModerators: string[]; allowedReflectors: string[]; allowedCoolers: string[]; allowConductors: boolean;
-  maxFuel?: number | ''; minEfficiency?: number | ''; symmetry: { x: boolean; y: boolean; z: boolean };
+  allowedShields: string[]; allowIrradiators: boolean; irradiatorRecipe: IrradiatorRecipeId; decayMechanics: boolean;
+  /** every fuel component must stop when the shields are switched on */
+  controllable: boolean;
+  maxFuel?: number | ''; minEfficiency?: number | ''; minIrradiatorFlux?: number | ''; symmetry: { x: boolean; y: boolean; z: boolean };
   timeLimitSec: number; workers: number; seed?: number | ''; initial?: number[];
   /** share the best layout between worker threads */
   cooperate?: boolean;
@@ -43,7 +52,7 @@ export interface LibraryEntry {
   stable: boolean; createdAt: number; jobId?: string; compatible?: boolean;
 }
 
-export interface SimDetail { stats: ReactorStats; blocks: BlockInfo[]; sourcePlan: SourcePlan; layout: LayoutJSON }
+export interface SimDetail { stats: ReactorStats; blocks: BlockInfo[]; sourcePlan: SourcePlan; layout: LayoutJSON; shutdown: ShutdownCheck | null; decay: DecayReport | null }
 
 async function json<T>(r: Response): Promise<T> {
   const body = await r.json().catch(() => ({}));
@@ -53,7 +62,7 @@ async function json<T>(r: Response): Promise<T> {
 
 export const api = {
   meta: () => fetch('/api/meta').then((r) => json<Meta>(r)),
-  simulate: (b: { reactor: ReactorType; dims: [number, number, number]; fuelId: string; fuelIds?: string[]; sfrCoolant?: string; grid: number[]; sourceType?: string }) =>
+  simulate: (b: { reactor: ReactorType; dims: [number, number, number]; fuelId: string; fuelIds?: string[]; sfrCoolant?: string; grid: number[]; sourceType?: string } & SimSettings) =>
     fetch('/api/simulate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) }).then((r) => json<SimDetail>(r)),
   optimize: (b: OptimizeRequest) =>
     fetch('/api/optimize', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) }).then((r) => json<{ jobId: string; workers: number }>(r)),

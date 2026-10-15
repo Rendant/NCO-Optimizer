@@ -4,11 +4,11 @@
  *  - nc/multiblock/PlacementRule.java (And / Or / Adjacent.satisfied)
  * Facing indices follow Minecraft's EnumFacing: 0 DOWN, 1 UP, 2 NORTH, 3 SOUTH, 4 WEST, 5 EAST.
  */
-import { COOLER_NAMES, HEATER_NAMES, ReactorType } from './components.js';
+import { ReactorType, coolerNames } from './components.js';
 
 export type CountType = 'atLeast' | 'exactly' | 'atMost';
 export type AdjacencyType = 'standard' | 'axial' | 'vertex' | 'edge';
-export type RuleTarget = 'casing' | 'conductor' | 'moderator' | 'reflector' | 'fuel' | 'cooler' | 'unsupported';
+export type RuleTarget = 'casing' | 'conductor' | 'moderator' | 'reflector' | 'fuel' | 'cooler' | 'shield' | 'irradiator' | 'unsupported';
 
 export interface AdjacentRule {
   target: RuleTarget;
@@ -61,9 +61,14 @@ function partialParse(raw: string, reactor: ReactorType): AdjacentRule | null {
       else if (w.includes('conductor')) target = 'conductor';
       else if (w.includes('moderator')) target = 'moderator';
       else if (w.includes('reflector')) target = 'reflector';
-      else if (w.includes('irradiator') || w.includes('shield') || w.includes('chamber')) target = 'unsupported';
-      else if (w.includes('cooler')) { if (i === 0) return null; target = 'unsupported'; }
-      else if (w.includes('cell')) target = reactor === 'sfr' ? 'fuel' : 'unsupported';
+      else if (w.includes('irradiator')) target = 'irradiator';
+      else if (w.includes('shield')) target = 'shield';
+      else if (w.includes('chamber')) target = reactor === 'pbr' ? 'fuel' : 'unsupported';
+      else if (w.includes('cooler')) {
+        if (i === 0) return null;
+        target = reactor === 'pbr' ? 'cooler' : 'unsupported';
+        typeName = split[i - 1];
+      } else if (w.includes('cell')) target = reactor === 'sfr' ? 'fuel' : 'unsupported';
       else if (w.includes('sink')) {
         if (i === 0) return null;
         target = reactor === 'sfr' ? 'cooler' : 'unsupported';
@@ -81,8 +86,7 @@ function partialParse(raw: string, reactor: ReactorType): AdjacentRule | null {
   const adj: AdjacencyType = axial ? 'axial' : vertex ? 'vertex' : edge ? 'edge' : 'standard';
   let coolerType = -1;
   if (target === 'cooler' && typeName !== 'any') {
-    const names: readonly string[] = reactor === 'sfr' ? COOLER_NAMES : HEATER_NAMES;
-    coolerType = names.indexOf(typeName!);
+    coolerType = coolerNames(reactor).indexOf(typeName!);
     if (coolerType < 0) throw new Error(`Unknown cooler type "${typeName}" in rule "${raw}"`);
   }
   return { target, coolerType, amount, count, adj, text: raw.trim() };

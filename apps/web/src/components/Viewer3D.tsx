@@ -50,7 +50,7 @@ export default function Viewer3D({ layout, infos, mode, maxEff, maxFlux, selecte
       if (b === 0) continue;
       const info = infos.get(i);
       if (info && hideAirlike.has(info.category)) continue;
-      const look = cellLook(b, info, mode, maxEff, maxFlux);
+      const look = cellLook(b, info, mode, maxEff, maxFlux, layout.reactor);
       if (look.dim && hideInactive) continue;
       (look.dim ? ghost : solid).push({ i, pos: center(x, y, z), color: look.color });
     }

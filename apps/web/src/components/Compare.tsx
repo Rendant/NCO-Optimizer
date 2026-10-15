@@ -22,6 +22,7 @@ const COLS: Col[] = [
   { key: 'margin', label: 'Margin', get: (s) => s.cooling - s.rawHeating, show: (v) => (v >= 0 ? '+' : '') + fmt(v), higher: null },
   { key: 'sp', label: 'Sparsity', get: (s) => s.sparsityEfficiencyMult, show: (v) => `×${v.toFixed(3)}`, higher: true },
   { key: 'fph', label: 'Fuel/h', get: (s) => s.fuelPerHour, show: (v) => fmt(v, 2), higher: null },
+  { key: 'irr', label: 'Irradiator flux', get: (s) => s.irradiatorFlux ?? 0, show: (v) => (v ? fmt(v) : '—'), higher: true },
 ];
 
 export default function Compare({ layouts, selectedId, onSelect, onRemove, onExport, fuelName, onImprove }: Props) {

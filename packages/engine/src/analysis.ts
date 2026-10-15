@@ -1,17 +1,21 @@
-/** Per-block explanations and neutron source planning on top of the simulator state. */
-import { Simulator, DIR_NAMES, DIRS, opposite, ReactorStats } from './simulator.js';
-import { COOLER0, CONDUCTOR, AIR, isModerator, isReflector, isFuel, isCooler, MOD0, REFL0, blockKey, blockName } from './blocks.js';
-import { MODERATORS, REFLECTORS, COOLING_RATES, SOURCES } from './components.js';
+/** Per-block explanations, neutron source planning, shutdown and decay analysis on top of the simulator state. */
+import { Simulator, DIR_NAMES, DIRS, opposite, ReactorStats, LINE_FUEL, LINE_REFLECTOR, LINE_IRRADIATOR } from './simulator.js';
+import { COOLER0, CONDUCTOR, AIR, SHIELD0, isModerator, isReflector, isFuel, isCooler, isShield, isIrradiator, MOD0, REFL0, blockKey, blockName } from './blocks.js';
+import { MODERATORS, REFLECTORS, SHIELDS, SOURCES, DECAY_CONFIG } from './components.js';
 import { adjacentSatisfied } from './rules.js';
 
-export interface LineInfo { dir: string; kind: 'fuel' | 'reflector'; length: number; flux: number; efficiency: number; partner: [number, number, number]; incoming: boolean }
+export interface LineInfo {
+  dir: string; kind: 'fuel' | 'reflector' | 'irradiator'; length: number; flux: number; efficiency: number; partner: [number, number, number]; incoming: boolean;
+  /** Direct line to a face-adjacent component carrying only intrinsic flux (no moderators). */
+  intrinsic: boolean;
+}
 export interface BlockInfo {
   index: number;
   pos: [number, number, number];
   block: number;
   key: string;
   name: string;
-  category: 'air' | 'fuel' | 'moderator' | 'reflector' | 'conductor' | 'cooler';
+  category: 'air' | 'fuel' | 'moderator' | 'reflector' | 'conductor' | 'cooler' | 'shield' | 'irradiator';
   active: boolean;
   cluster: number;
   fuel?: {
@@ -24,8 +28,16 @@ export interface BlockInfo {
   moderator?: { state: 'active' | 'passive' | 'unused'; fluxFactor: number; efficiency: number };
   reflector?: { active: boolean; efficiency: number; reflectivity: number };
   cooler?: { valid: boolean; failedRecheck: boolean; rule: string; cooling: number; conditions: { text: string; ok: boolean; matches: number }[] };
+  shield?: {
+    functional: boolean; failed: boolean; flux: number; heatPerFlux: number; efficiency: number; rawHeating: number; effectiveHeating: number;
+    /** flux contribution of the complete line along each axis */
+    axes: { axis: 'x' | 'y' | 'z'; flux: number }[];
+  };
+  irradiator?: { flux: number; recipe: string; itemsPerHour: number; lines: number; heatPerFlux: number; efficiency: number };
   notes: string[];
 }
+
+const AXIS_NAMES = ['y', 'z', 'x'] as const; // DIRS axis order: down/up, north/south, west/east
 
 export function explainBlock(sim: Simulator, i: number): BlockInfo {
   const b = sim.grid[i];
@@ -33,7 +45,8 @@ export function explainBlock(sim: Simulator, i: number): BlockInfo {
   const pos = sim.coords(i);
   const info: BlockInfo = {
     index: i, pos, block: b, key: blockKey(b, reactor), name: blockName(b, reactor),
-    category: b === AIR ? 'air' : isFuel(b) ? 'fuel' : isModerator(b) ? 'moderator' : isReflector(b) ? 'reflector' : b === CONDUCTOR ? 'conductor' : 'cooler',
+    category: b === AIR ? 'air' : isFuel(b) ? 'fuel' : isModerator(b) ? 'moderator' : isReflector(b) ? 'reflector' : b === CONDUCTOR ? 'conductor'
+      : isShield(b) ? 'shield' : isIrradiator(b) ? 'irradiator' : 'cooler',
     active: false, cluster: sim.cluster[i], notes: [],
   };
   if (isFuel(b)) {
@@ -43,13 +56,17 @@ export function explainBlock(sim: Simulator, i: number): BlockInfo {
     const lines: LineInfo[] = [];
     for (let d = 0; d < 6; d++) {
       const li = i * 6 + d;
-      if (sim.lineType[li] === 1) {
+      const intrinsic = sim.lineLen[li] === 0;
+      if (sim.lineType[li] === LINE_FUEL) {
         const t = sim.lineTarget[li];
         // incoming line from the partner (what actually counts for this component)
         const back = t * 6 + opposite(d);
-        lines.push({ dir: DIR_NAMES[d], kind: 'fuel', length: sim.lineLen[li], flux: sim.lineFlux[back] || sim.lineFlux[li], efficiency: sim.lineEff[li], partner: sim.coords(t), incoming: sim.running[t] === 1 });
-      } else if (sim.lineType[li] === 2) {
-        lines.push({ dir: DIR_NAMES[d], kind: 'reflector', length: sim.lineLen[li], flux: sim.lineFlux[li], efficiency: sim.lineEff[li], partner: sim.coords(sim.lineTarget[li]), incoming: running });
+        lines.push({ dir: DIR_NAMES[d], kind: 'fuel', length: sim.lineLen[li], flux: sim.lineFlux[back] || sim.lineFlux[li], efficiency: sim.lineEff[li], partner: sim.coords(t), incoming: sim.running[t] === 1, intrinsic });
+      } else if (sim.lineType[li] === LINE_REFLECTOR || sim.lineType[li] === LINE_IRRADIATOR) {
+        lines.push({
+          dir: DIR_NAMES[d], kind: sim.lineType[li] === LINE_REFLECTOR ? 'reflector' : 'irradiator', length: sim.lineLen[li], flux: sim.lineFlux[li],
+          efficiency: sim.lineEff[li], partner: sim.coords(sim.lineTarget[li]), incoming: running, intrinsic,
+        });
       }
     }
     const fluxEff = running ? sim.fluxEfficiencyFactor(bunch) : 0;
@@ -94,8 +111,37 @@ export function explainBlock(sim: Simulator, i: number): BlockInfo {
       return { text: s.text, ok: adjacentSatisfied(s, mask), matches };
     });
     info.active = sim.valid[i] === 1;
-    info.cooler = { valid: info.active, failedRecheck: sim.failed[i] === 1, rule: rule.text, cooling: COOLING_RATES[t], conditions };
+    info.cooler = { valid: info.active, failedRecheck: sim.failed[i] === 1, rule: rule.text, cooling: sim.rates[t], conditions };
     if (!info.active) info.notes.push(sim.failed[i] ? 'Failed the exact/at-most rule recheck.' : `Placement rule "${rule.text}" is not satisfied.`);
+  } else if (isShield(b)) {
+    const sh = SHIELDS[b - SHIELD0];
+    const flux = sim.shieldFlux(i);
+    info.active = sim.shieldFunc[i] === 1;
+    const axes = AXIS_NAMES.map((axis, k) => ({ axis, flux: sim.shieldAxis[i * 3 + k] })).filter((_, k) => sim.shieldAxis[i * 3 + k] > 0 || info.active);
+    info.shield = {
+      functional: info.active, failed: sim.shieldFail[i] === 1, flux, heatPerFlux: sh.heatPerFlux, efficiency: sh.efficiency,
+      rawHeating: info.active ? Math.floor(flux * sh.heatPerFlux) : 0, effectiveHeating: info.active ? flux * sh.heatPerFlux * sh.efficiency : 0,
+      axes: info.active ? axes : [],
+    };
+    if (sim.opts.shieldsOn) info.notes.push('Shielding: blocks every moderator line through it.');
+    else if (info.active) info.notes.push(`In a complete moderator line: passes neutrons (flux factor 0, efficiency ${sh.efficiency}) and turns ${sh.heatPerFlux} H/t per flux into heat that its cluster must cool. Switching the shield manager on blocks the line.`);
+    else info.notes.push(sim.shieldFail[i]
+      ? 'Its moderator lines end at an inactive fuel component / irradiator: the shield is in the component fail cache and blocks them.'
+      : 'Not part of a complete moderator line between running fuel components / reflectors / irradiators.');
+  } else if (isIrradiator(b)) {
+    const r = sim.irradiator;
+    const flux = sim.irrFlux[i];
+    info.active = flux > 0;
+    let lines = 0;
+    for (let k = 0; k < sim.fuelCount; k++) {
+      const f = sim.fuelList[k];
+      if (!sim.running[f]) continue;
+      for (let d = 0; d < 6; d++) if (sim.lineType[f * 6 + d] === LINE_IRRADIATOR && sim.lineTarget[f * 6 + d] === i) lines++;
+    }
+    info.irradiator = { flux, recipe: r.name, itemsPerHour: (72000 * flux) / r.fluxPerItem, lines, heatPerFlux: r.heatPerFlux, efficiency: r.efficiency };
+    info.notes.push(info.active
+      ? `Receives ${flux} flux from ${lines} moderator line(s): ${r.fluxPerItem.toLocaleString('en-US')} flux per item (${r.name}). Each line adds a heat multiplier to its fuel component, with line efficiency × ${r.efficiency}.`
+      : 'No moderator line from a running fuel component ends here (lines need at least one moderator, or intrinsic flux from an adjacent fuel component).');
   } else if (b === CONDUCTOR) {
     info.active = sim.cluster[i] >= 0;
     info.notes.push(info.active ? 'Connects heat between components of its cluster and the casing.' : 'Not connected to any functional component.');
@@ -145,6 +191,8 @@ export function sourceCandidates(sim: Simulator): SourcePlacement[] {
       while (x >= 0 && y >= 0 && z >= 0 && x < X && y < Y && z < Z) {
         const i = sim.index(x, y, z), b = sim.grid[i];
         if (isReflector(b) && REFLECTORS[b - REFL0].reflectivity >= 1) break;
+        // IFissionComponent.isNullifyingSources: irradiators (with inputs) and shielding shields block the ray
+        if (isIrradiator(b) || (isShield(b) && sim.opts.shieldsOn)) break;
         if (isFuel(b)) { out.push({ wall, facing: DIR_NAMES[d], target: [x, y, z], targetIndex: i }); break; }
         x += dx; y += dy; z += dz;
       }
@@ -215,4 +263,144 @@ export function planSources(sim: Simulator, grid: Uint8Array, sourceTypeId = 'ca
   probe.opts.primed = chosen.map((c) => ({ index: c.targetIndex, efficiency: src.efficiency }));
   const stats = probe.evaluate(grid);
   return { needed: true, selfPriming: false, sourceType: src.id, sources: chosen, fullyPrimed: current >= targetCountNS, unprimedRunning: targetCountNS - current, stats };
+}
+
+// ------------------------------------------------------------------ shutdown with neutron shields
+export interface ShutdownCheck {
+  /** Shields in the layout */
+  shields: number;
+  /** Fuel components still running with every shield shielding */
+  stillRunning: number;
+  /** True if switching the shields on stops every fuel component */
+  controllable: boolean;
+}
+
+/**
+ * Switches every neutron shield on (FissionReactorLogic.onShieldUpdated -> refresh): the running components stay
+ * primed (isInitiallyPrimed = functional) and keep running only if they still reach criticality without the
+ * shielded lines.
+ */
+export function shutdownCheck(sim: Simulator, grid: Uint8Array): ShutdownCheck {
+  const stats = sim.evaluate(grid);
+  const primed: { index: number; efficiency: number }[] = [];
+  for (let i = 0; i < sim.N; i++) if (sim.running[i]) primed.push({ index: i, efficiency: sim.srcEff[i] });
+  const on = new Simulator([sim.X, sim.Y, sim.Z], { ...sim.opts, shieldsOn: true, primed });
+  const s = on.evaluate(grid);
+  return { shields: stats.shields, stillRunning: s.runningFuelComponents, controllable: stats.shields > 0 && s.runningFuelComponents === 0 };
+}
+
+// ------------------------------------------------------------------ decay heat and neutron poisoning
+export interface DecayFuelReport {
+  fuelId: string;
+  name: string;
+  decayFactor: number;
+  /** getCriticality with fresh fuel (no poison yet) */
+  startupCriticality: number;
+  /** getCriticality at the running equilibrium (what the steady state uses) */
+  equilibriumCriticality: number;
+  /** highest criticality after a shutdown from equilibrium (iodine decaying into poison) and when it occurs */
+  peakCriticality: number;
+  peakAfterTicks: number;
+}
+export interface DecayReport {
+  fuels: DecayFuelReport[];
+  /** Decay heat right after a shutdown from equilibrium (H/t), total and per cluster with the cluster's cooling */
+  shutdownHeat: number;
+  clusters: { id: number; decayHeat: number; cooling: number }[];
+  /** Ticks until the decay heat falls below 1% of its initial value */
+  decayHeatTicks: number;
+  /**
+   * Restarting after a shutdown: ticks after the shutdown during which some running fuel component would not reach
+   * its (poisoned) criticality with the layout's flux, or null if a restart is always possible.
+   */
+  restartBlocked: { fromTicks: number; toTicks: number } | null;
+}
+
+/** One tick of TileSolidFissionCell / TileSaltFissionVessel.updateDecayFractions for a component that is not processing. */
+function decayTick(s: { heat: number; iodine: number; poison: number }, d: number) {
+  const C = DECAY_CONFIG, [m0, m1] = C.termMultipliers;
+  const eqH = C.equilibriumFactors[0] * d, eqI = C.equilibriumFactors[1] * d, eqP = C.equilibriumFactors[2] * d;
+  const redH = Math.min(s.heat, (m0 * s.heat + m1 * eqH) / C.lifetimes[0]);
+  s.heat = Math.max(0, s.heat - redH);
+  const redI = Math.min(s.iodine, (m0 * s.iodine + m1 * eqI) / C.lifetimes[1]);
+  s.iodine = Math.max(0, s.iodine - redI + C.daughterMultipliers[0] * redH);
+  const redP = Math.min(s.poison, (m0 * s.poison + m1 * eqP) / C.lifetimes[2]);
+  s.poison = Math.max(0, s.poison - redP + C.daughterMultipliers[1] * redI);
+}
+
+/**
+ * Decay heat and poisoning (fission_decay_mechanics) for the simulator's current state, which must have been evaluated
+ * with decayMechanics on. While running, decay heat is zero and the poison sits at its equilibrium, so the steady state
+ * itself is unchanged; after a shutdown the fuel keeps producing decay heat and iodine decays into poison, which raises
+ * the criticality before it falls back.
+ */
+export function decayReport(sim: Simulator, horizonTicks = 72000 * 3): DecayReport {
+  const C = DECAY_CONFIG;
+  const slots = sim.fuels.length;
+  // per fuel slot: criticality and decay-heat fraction over time after a shutdown (one sample per 20 ticks)
+  const step = 20, samples = Math.ceil(horizonTicks / step) + 1;
+  const crit: Float64Array[] = [], heatFrac: Float64Array[] = [];
+  const fuels: DecayFuelReport[] = sim.fuels.map((f, k) => {
+    const d = f.decayFactor;
+    const s = { heat: C.equilibriumFactors[0] * d, iodine: C.equilibriumFactors[1] * d, poison: C.equilibriumFactors[2] * d };
+    const cs = new Float64Array(samples), hs = new Float64Array(samples);
+    let peak = 0, peakAt = 0;
+    for (let t = 0, n = 0; n < samples; t++) {
+      if (t % step === 0) {
+        const c = Math.trunc(f.criticality * (1 - d + s.poison));
+        cs[n] = c; hs[n] = s.heat; n++;
+        if (c > peak) { peak = c; peakAt = t; }
+      }
+      decayTick(s, d);
+    }
+    crit[k] = cs; heatFrac[k] = hs;
+    return {
+      fuelId: f.id, name: f.name, decayFactor: d,
+      startupCriticality: Math.trunc(f.criticality * (1 - d)), equilibriumCriticality: sim.critInt[k],
+      peakCriticality: peak, peakAfterTicks: peakAt,
+    };
+  });
+  // decay heat right after the shutdown: bunching factor × Σ toInt(base heat × decay-heat fraction) of running members
+  const clusters = new Map<number, { id: number; decayHeat: number; cooling: number }>();
+  let total = 0;
+  for (let b = 0; b < sim.bunchCount; b++) {
+    if (!sim.bunchEmit[b]) continue;
+    const k = sim.bunchSlot(b), f = sim.fuels[k];
+    let h = 0, c = -1;
+    for (let q = sim.memberStart[b]; q < sim.memberStart[b + 1]; q++) {
+      const i = sim.memberList[q];
+      if (!sim.running[i]) continue;
+      h += Math.trunc(f.heat * heatFrac[k][0]);
+      c = sim.cluster[i];
+    }
+    h *= sim.bunchingFactor(b);
+    total += h;
+    if (c >= 0) {
+      const e = clusters.get(c) ?? { id: c, decayHeat: 0, cooling: sim.stats.clusters[c].cooling };
+      e.decayHeat += h; clusters.set(c, e);
+    }
+  }
+  let decayHeatTicks = 0;
+  for (let k = 0; k < slots; k++) {
+    const h0 = heatFrac[k][0];
+    let n = 0; while (n < samples - 1 && heatFrac[k][n] > 0.01 * h0) n++;
+    decayHeatTicks = Math.max(decayHeatTicks, n * step);
+  }
+  // restart window: every running bunch needs flux >= surface factor × criticality(t), i.e. criticality(t) <= flux / surface factor
+  const maxCrit = new Array<number>(slots).fill(Infinity);
+  for (let b = 0; b < sim.bunchCount; b++) {
+    if (!sim.bunchEmit[b]) continue;
+    const k = sim.bunchSlot(b);
+    maxCrit[k] = Math.min(maxCrit[k], sim.bunchFlux[b] / sim.surfaceFactor(b));
+  }
+  let from = -1, to = -1;
+  for (let n = 0; n < samples; n++) {
+    let ok = true;
+    for (let k = 0; k < slots && ok; k++) if (crit[k][n] > maxCrit[k]) ok = false;
+    if (!ok) { if (from < 0) from = n * step; to = n * step; }
+  }
+  return {
+    fuels, shutdownHeat: total, clusters: [...clusters.values()].sort((a, b) => a.id - b.id), decayHeatTicks,
+    restartBlocked: from < 0 ? null : { fromTicks: from, toTicks: to + step },
+  };
 }

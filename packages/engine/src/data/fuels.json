@@ -1,5 +1,19 @@
 [
  {
+  "id": "tbu-triso",
+  "name": "TBU TRISO",
+  "isotope": "TBU",
+  "form": "TRISO",
+  "reactor": "pbr",
+  "time": 14400,
+  "heat": 40,
+  "efficiency": 1.25,
+  "criticality": 199,
+  "intrinsicFlux": 10,
+  "selfPriming": false,
+  "decayFactor": 0.04
+ },
+ {
   "id": "tbu-oxide",
   "name": "TBU Oxide",
   "isotope": "TBU",
@@ -56,6 +70,20 @@
   "decayFactor": 0.04
  },
  {
+  "id": "leu-233-triso",
+  "name": "LEU-233 TRISO",
+  "isotope": "LEU-233",
+  "form": "TRISO",
+  "reactor": "pbr",
+  "time": 2666,
+  "heat": 216,
+  "efficiency": 1.1,
+  "criticality": 66,
+  "intrinsicFlux": 10,
+  "selfPriming": false,
+  "decayFactor": 0.065
+ },
+ {
   "id": "leu-233-oxide",
   "name": "LEU-233 Oxide",
   "isotope": "LEU-233",
@@ -108,6 +136,20 @@
   "efficiency": 1.1,
   "criticality": 78,
   "intrinsicFlux": 0,
+  "selfPriming": false,
+  "decayFactor": 0.065
+ },
+ {
+  "id": "heu-233-triso",
+  "name": "HEU-233 TRISO",
+  "isotope": "HEU-233",
+  "form": "TRISO",
+  "reactor": "pbr",
+  "time": 2666,
+  "heat": 648,
+  "efficiency": 1.15,
+  "criticality": 33,
+  "intrinsicFlux": 10,
   "selfPriming": false,
   "decayFactor": 0.065
  },
@@ -168,6 +210,20 @@
   "decayFactor": 0.065
  },
  {
+  "id": "leu-235-triso",
+  "name": "LEU-235 TRISO",
+  "isotope": "LEU-235",
+  "form": "TRISO",
+  "reactor": "pbr",
+  "time": 4800,
+  "heat": 120,
+  "efficiency": 1.0,
+  "criticality": 87,
+  "intrinsicFlux": 10,
+  "selfPriming": false,
+  "decayFactor": 0.065
+ },
+ {
   "id": "leu-235-oxide",
   "name": "LEU-235 Oxide",
   "isotope": "LEU-235",
@@ -220,6 +276,20 @@
   "efficiency": 1,
   "criticality": 102,
   "intrinsicFlux": 0,
+  "selfPriming": false,
+  "decayFactor": 0.065
+ },
+ {
+  "id": "heu-235-triso",
+  "name": "HEU-235 TRISO",
+  "isotope": "HEU-235",
+  "form": "TRISO",
+  "reactor": "pbr",
+  "time": 4800,
+  "heat": 360,
+  "efficiency": 1.05,
+  "criticality": 43,
+  "intrinsicFlux": 10,
   "selfPriming": false,
   "decayFactor": 0.065
  },
@@ -280,6 +350,20 @@
   "decayFactor": 0.065
  },
  {
+  "id": "len-236-triso",
+  "name": "LEN-236 TRISO",
+  "isotope": "LEN-236",
+  "form": "TRISO",
+  "reactor": "pbr",
+  "time": 1972,
+  "heat": 292,
+  "efficiency": 1.1,
+  "criticality": 60,
+  "intrinsicFlux": 10,
+  "selfPriming": false,
+  "decayFactor": 0.07
+ },
+ {
   "id": "len-236-oxide",
   "name": "LEN-236 Oxide",
   "isotope": "LEN-236",
@@ -332,6 +416,20 @@
   "efficiency": 1.1,
   "criticality": 70,
   "intrinsicFlux": 0,
+  "selfPriming": false,
+  "decayFactor": 0.07
+ },
+ {
+  "id": "hen-236-triso",
+  "name": "HEN-236 TRISO",
+  "isotope": "HEN-236",
+  "form": "TRISO",
+  "reactor": "pbr",
+  "time": 1972,
+  "heat": 876,
+  "efficiency": 1.15,
+  "criticality": 30,
+  "intrinsicFlux": 10,
   "selfPriming": false,
   "decayFactor": 0.07
  },
@@ -392,6 +490,20 @@
   "decayFactor": 0.07
  },
  {
+  "id": "lep-239-triso",
+  "name": "LEP-239 TRISO",
+  "isotope": "LEP-239",
+  "form": "TRISO",
+  "reactor": "pbr",
+  "time": 4572,
+  "heat": 126,
+  "efficiency": 1.2,
+  "criticality": 84,
+  "intrinsicFlux": 10,
+  "selfPriming": false,
+  "decayFactor": 0.075
+ },
+ {
   "id": "lep-239-oxide",
   "name": "LEP-239 Oxide",
   "isotope": "LEP-239",
@@ -444,6 +556,20 @@
   "efficiency": 1.2,
   "criticality": 99,
   "intrinsicFlux": 0,
+  "selfPriming": false,
+  "decayFactor": 0.075
+ },
+ {
+  "id": "hep-239-triso",
+  "name": "HEP-239 TRISO",
+  "isotope": "HEP-239",
+  "form": "TRISO",
+  "reactor": "pbr",
+  "time": 4572,
+  "heat": 378,
+  "efficiency": 1.25,
+  "criticality": 42,
+  "intrinsicFlux": 10,
   "selfPriming": false,
   "decayFactor": 0.075
  },
@@ -504,6 +630,20 @@
   "decayFactor": 0.075
  },
  {
+  "id": "lep-241-triso",
+  "name": "LEP-241 TRISO",
+  "isotope": "LEP-241",
+  "form": "TRISO",
+  "reactor": "pbr",
+  "time": 3164,
+  "heat": 182,
+  "efficiency": 1.25,
+  "criticality": 71,
+  "intrinsicFlux": 10,
+  "selfPriming": false,
+  "decayFactor": 0.075
+ },
+ {
   "id": "lep-241-oxide",
   "name": "LEP-241 Oxide",
   "isotope": "LEP-241",
@@ -556,6 +696,20 @@
   "efficiency": 1.25,
   "criticality": 84,
   "intrinsicFlux": 0,
+  "selfPriming": false,
+  "decayFactor": 0.075
+ },
+ {
+  "id": "hep-241-triso",
+  "name": "HEP-241 TRISO",
+  "isotope": "HEP-241",
+  "form": "TRISO",
+  "reactor": "pbr",
+  "time": 3164,
+  "heat": 546,
+  "efficiency": 1.3,
+  "criticality": 35,
+  "intrinsicFlux": 10,
   "selfPriming": false,
   "decayFactor": 0.075
  },
@@ -616,6 +770,20 @@
   "decayFactor": 0.075
  },
  {
+  "id": "mix-239-triso",
+  "name": "MIX-239 TRISO",
+  "isotope": "MIX-239",
+  "form": "TRISO",
+  "reactor": "pbr",
+  "time": 4354,
+  "heat": 132,
+  "efficiency": 1.05,
+  "criticality": 80,
+  "intrinsicFlux": 10,
+  "selfPriming": false,
+  "decayFactor": 0.075
+ },
+ {
   "id": "mix-239-oxide",
   "name": "MIX-239 Oxide",
   "isotope": "MIX-239",
@@ -668,6 +836,20 @@
   "efficiency": 1.05,
   "criticality": 94,
   "intrinsicFlux": 0,
+  "selfPriming": false,
+  "decayFactor": 0.075
+ },
+ {
+  "id": "mix-241-triso",
+  "name": "MIX-241 TRISO",
+  "isotope": "MIX-241",
+  "form": "TRISO",
+  "reactor": "pbr",
+  "time": 3014,
+  "heat": 192,
+  "efficiency": 1.15,
+  "criticality": 68,
+  "intrinsicFlux": 10,
   "selfPriming": false,
   "decayFactor": 0.075
  },
@@ -728,6 +910,20 @@
   "decayFactor": 0.075
  },
  {
+  "id": "lea-242-triso",
+  "name": "LEA-242 TRISO",
+  "isotope": "LEA-242",
+  "form": "TRISO",
+  "reactor": "pbr",
+  "time": 1476,
+  "heat": 390,
+  "efficiency": 1.35,
+  "criticality": 55,
+  "intrinsicFlux": 10,
+  "selfPriming": false,
+  "decayFactor": 0.08
+ },
+ {
   "id": "lea-242-oxide",
   "name": "LEA-242 Oxide",
   "isotope": "LEA-242",
@@ -780,6 +976,20 @@
   "efficiency": 1.35,
   "criticality": 65,
   "intrinsicFlux": 0,
+  "selfPriming": false,
+  "decayFactor": 0.08
+ },
+ {
+  "id": "hea-242-triso",
+  "name": "HEA-242 TRISO",
+  "isotope": "HEA-242",
+  "form": "TRISO",
+  "reactor": "pbr",
+  "time": 1476,
+  "heat": 1170,
+  "efficiency": 1.4,
+  "criticality": 27,
+  "intrinsicFlux": 10,
   "selfPriming": false,
   "decayFactor": 0.08
  },
@@ -840,6 +1050,20 @@
   "decayFactor": 0.08
  },
  {
+  "id": "lecm-243-triso",
+  "name": "LECm-243 TRISO",
+  "isotope": "LECm-243",
+  "form": "TRISO",
+  "reactor": "pbr",
+  "time": 1500,
+  "heat": 384,
+  "efficiency": 1.45,
+  "criticality": 56,
+  "intrinsicFlux": 10,
+  "selfPriming": false,
+  "decayFactor": 0.085
+ },
+ {
   "id": "lecm-243-oxide",
   "name": "LECm-243 Oxide",
   "isotope": "LECm-243",
@@ -892,6 +1116,20 @@
   "efficiency": 1.45,
   "criticality": 66,
   "intrinsicFlux": 0,
+  "selfPriming": false,
+  "decayFactor": 0.085
+ },
+ {
+  "id": "hecm-243-triso",
+  "name": "HECm-243 TRISO",
+  "isotope": "HECm-243",
+  "form": "TRISO",
+  "reactor": "pbr",
+  "time": 1500,
+  "heat": 1152,
+  "efficiency": 1.5,
+  "criticality": 28,
+  "intrinsicFlux": 10,
   "selfPriming": false,
   "decayFactor": 0.085
  },
@@ -952,6 +1190,20 @@
   "decayFactor": 0.085
  },
  {
+  "id": "lecm-245-triso",
+  "name": "LECm-245 TRISO",
+  "isotope": "LECm-245",
+  "form": "TRISO",
+  "reactor": "pbr",
+  "time": 2420,
+  "heat": 238,
+  "efficiency": 1.5,
+  "criticality": 64,
+  "intrinsicFlux": 10,
+  "selfPriming": false,
+  "decayFactor": 0.085
+ },
+ {
   "id": "lecm-245-oxide",
   "name": "LECm-245 Oxide",
   "isotope": "LECm-245",
@@ -1004,6 +1256,20 @@
   "efficiency": 1.5,
   "criticality": 75,
   "intrinsicFlux": 0,
+  "selfPriming": false,
+  "decayFactor": 0.085
+ },
+ {
+  "id": "hecm-245-triso",
+  "name": "HECm-245 TRISO",
+  "isotope": "HECm-245",
+  "form": "TRISO",
+  "reactor": "pbr",
+  "time": 2420,
+  "heat": 714,
+  "efficiency": 1.55,
+  "criticality": 32,
+  "intrinsicFlux": 10,
   "selfPriming": false,
   "decayFactor": 0.085
  },
@@ -1064,6 +1330,20 @@
   "decayFactor": 0.085
  },
  {
+  "id": "lecm-247-triso",
+  "name": "LECm-247 TRISO",
+  "isotope": "LECm-247",
+  "form": "TRISO",
+  "reactor": "pbr",
+  "time": 2150,
+  "heat": 268,
+  "efficiency": 1.55,
+  "criticality": 61,
+  "intrinsicFlux": 10,
+  "selfPriming": false,
+  "decayFactor": 0.085
+ },
+ {
   "id": "lecm-247-oxide",
   "name": "LECm-247 Oxide",
   "isotope": "LECm-247",
@@ -1116,6 +1396,20 @@
   "efficiency": 1.55,
   "criticality": 72,
   "intrinsicFlux": 0,
+  "selfPriming": false,
+  "decayFactor": 0.085
+ },
+ {
+  "id": "hecm-247-triso",
+  "name": "HECm-247 TRISO",
+  "isotope": "HECm-247",
+  "form": "TRISO",
+  "reactor": "pbr",
+  "time": 2150,
+  "heat": 804,
+  "efficiency": 1.6,
+  "criticality": 30,
+  "intrinsicFlux": 10,
   "selfPriming": false,
   "decayFactor": 0.085
  },
@@ -1176,6 +1470,20 @@
   "decayFactor": 0.085
  },
  {
+  "id": "leb-248-triso",
+  "name": "LEB-248 TRISO",
+  "isotope": "LEB-248",
+  "form": "TRISO",
+  "reactor": "pbr",
+  "time": 2166,
+  "heat": 266,
+  "efficiency": 1.65,
+  "criticality": 62,
+  "intrinsicFlux": 10,
+  "selfPriming": false,
+  "decayFactor": 0.09
+ },
+ {
   "id": "leb-248-oxide",
   "name": "LEB-248 Oxide",
   "isotope": "LEB-248",
@@ -1228,6 +1536,20 @@
   "efficiency": 1.65,
   "criticality": 73,
   "intrinsicFlux": 0,
+  "selfPriming": false,
+  "decayFactor": 0.09
+ },
+ {
+  "id": "heb-248-triso",
+  "name": "HEB-248 TRISO",
+  "isotope": "HEB-248",
+  "form": "TRISO",
+  "reactor": "pbr",
+  "time": 2166,
+  "heat": 798,
+  "efficiency": 1.7,
+  "criticality": 31,
+  "intrinsicFlux": 10,
   "selfPriming": false,
   "decayFactor": 0.09
  },
@@ -1288,6 +1610,20 @@
   "decayFactor": 0.09
  },
  {
+  "id": "lecf-249-triso",
+  "name": "LECf-249 TRISO",
+  "isotope": "LECf-249",
+  "form": "TRISO",
+  "reactor": "pbr",
+  "time": 1066,
+  "heat": 540,
+  "efficiency": 1.75,
+  "criticality": 51,
+  "intrinsicFlux": 10,
+  "selfPriming": true,
+  "decayFactor": 0.1
+ },
+ {
   "id": "lecf-249-oxide",
   "name": "LECf-249 Oxide",
   "isotope": "LECf-249",
@@ -1340,6 +1676,20 @@
   "efficiency": 1.75,
   "criticality": 60,
   "intrinsicFlux": 0,
+  "selfPriming": true,
+  "decayFactor": 0.1
+ },
+ {
+  "id": "hecf-249-triso",
+  "name": "HECf-249 TRISO",
+  "isotope": "HECf-249",
+  "form": "TRISO",
+  "reactor": "pbr",
+  "time": 1066,
+  "heat": 1620,
+  "efficiency": 1.8,
+  "criticality": 25,
+  "intrinsicFlux": 10,
   "selfPriming": true,
   "decayFactor": 0.1
  },
@@ -1400,6 +1750,20 @@
   "decayFactor": 0.1
  },
  {
+  "id": "lecf-251-triso",
+  "name": "LECf-251 TRISO",
+  "isotope": "LECf-251",
+  "form": "TRISO",
+  "reactor": "pbr",
+  "time": 2000,
+  "heat": 288,
+  "efficiency": 1.8,
+  "criticality": 60,
+  "intrinsicFlux": 10,
+  "selfPriming": true,
+  "decayFactor": 0.1
+ },
+ {
   "id": "lecf-251-oxide",
   "name": "LECf-251 Oxide",
   "isotope": "LECf-251",
@@ -1452,6 +1816,20 @@
   "efficiency": 1.8,
   "criticality": 71,
   "intrinsicFlux": 0,
+  "selfPriming": true,
+  "decayFactor": 0.1
+ },
+ {
+  "id": "hecf-251-triso",
+  "name": "HECf-251 TRISO",
+  "isotope": "HECf-251",
+  "form": "TRISO",
+  "reactor": "pbr",
+  "time": 2000,
+  "heat": 864,
+  "efficiency": 1.85,
+  "criticality": 30,
+  "intrinsicFlux": 10,
   "selfPriming": true,
   "decayFactor": 0.1
  },

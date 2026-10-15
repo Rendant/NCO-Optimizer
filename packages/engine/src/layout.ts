@@ -1,6 +1,6 @@
 /** Serializable layout format shared by the API and UI. */
-import { ReactorType } from './components.js';
-import { blockKey, blockFromKey } from './blocks.js';
+import { ReactorType, IrradiatorRecipeId } from './components.js';
+import { blockKey, blockFromKey, IRRADIATOR } from './blocks.js';
 
 export interface LayoutJSON {
   format: 'ncopt-layout';
@@ -10,12 +10,17 @@ export interface LayoutJSON {
   /** Multi-fuel layouts: fuel per slot (fuelIds[0] = fuelId); block "cell_2" / "vessel_2" holds fuelIds[1], etc. */
   fuelIds?: string[];
   sfrCoolant?: string;
+  /** Recipe of the neutron irradiators (only when the layout has irradiators; default thorium) */
+  irradiatorRecipe?: IrradiatorRecipeId;
   dims: [number, number, number];
   /** blocks[z][y][x] as block keys */
   blocks: string[][][];
 }
 
-export function toLayoutJSON(grid: ArrayLike<number>, dims: [number, number, number], reactor: ReactorType, fuelId: string, sfrCoolant?: string, fuelIds?: string[]): LayoutJSON {
+export function toLayoutJSON(
+  grid: ArrayLike<number>, dims: [number, number, number], reactor: ReactorType, fuelId: string, sfrCoolant?: string, fuelIds?: string[],
+  irradiatorRecipe?: IrradiatorRecipeId,
+): LayoutJSON {
   const [X, Y, Z] = dims;
   const blocks: string[][][] = [];
   for (let z = 0; z < Z; z++) {
@@ -28,7 +33,8 @@ export function toLayoutJSON(grid: ArrayLike<number>, dims: [number, number, num
     blocks.push(layer);
   }
   const multi = fuelIds && fuelIds.length > 1 ? { fuelIds } : {};
-  return { format: 'ncopt-layout', version: 1, reactor, fuelId, ...multi, sfrCoolant, dims, blocks };
+  const irr = irradiatorRecipe && Array.prototype.includes.call(grid, IRRADIATOR) ? { irradiatorRecipe } : {};
+  return { format: 'ncopt-layout', version: 1, reactor, fuelId, ...multi, sfrCoolant, ...irr, dims, blocks };
 }
 
 export function fromLayoutJSON(l: LayoutJSON): Uint8Array {

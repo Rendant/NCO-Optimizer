@@ -30,7 +30,7 @@ The optimizer searches for the best layout under your constraints and uses all C
 Requires [Node.js](https://nodejs.org/) 20 or newer.
 
 ```sh
-git clone https://github.com/Rendant/ncopt.git ncopt
+git clone https://github.com/Rendant/NCO-Optimizer.git ncopt
 cd ncopt
 npm install
 npm start

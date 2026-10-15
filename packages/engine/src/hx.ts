@@ -108,7 +108,6 @@ export function simulateHX(layout: HxLayout): HxStats {
     if (x >= -1 && x <= X && y >= -1 && y <= Y && z >= -1 && z <= Z) nb[e * 6 + d] = ex(x, y, z);
   }
   const interior = (e: number) => cx[e] >= 0 && cx[e] < X && cy[e] >= 0 && cy[e] < Y && cz[e] >= 0 && cz[e] < Z;
-  const ii = (e: number) => cx[e] + X * (cy[e] + Y * cz[e]);
   const tubeType = new Int8Array(E).fill(-1), baffle = new Uint8Array(E), set = new Uint8Array(E * 6);
   let tubeCount = 0;
   for (let z = 0; z < Z; z++) for (let y = 0; y < Y; y++) for (let x = 0; x < X; x++) {

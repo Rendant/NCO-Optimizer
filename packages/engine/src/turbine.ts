@@ -87,8 +87,6 @@ export function parseCoilRule(text: string): CoilRule {
 export const COIL_RULES = TURBINE_COILS.map((c) => parseCoilRule(c.rule));
 export const CONNECTOR_RULE = parseCoilRule(TURBINE_CONNECTOR.rule);
 
-const DX = [1, -1, 0, 0], DY = [0, 0, 1, -1];
-
 /** Rules compiled to flat atoms: target code (W_BEARING, W_CONNECTOR, coil code, ANY_COIL, CASING), amount, count kind, axial. */
 const ANY_COIL = 100, CASING = 101;
 interface CAtom { target: number; amount: number; kind: 0 | 1 | 2; axial: boolean }

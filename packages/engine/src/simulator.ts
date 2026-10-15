@@ -8,7 +8,7 @@
  * with steady-state (fixed point) semantics instead of tick order.
  */
 import { FISSION_CONFIG, FuelDef, MODERATORS, REFLECTORS, ReactorType, SINK_RULES, HEATER_RULES, COOLING_RATES, SFR_COOLANTS, HEATER_COOLANTS } from './components.js';
-import { FUEL, MOD0, REFL0, CONDUCTOR, COOLER0, COOLER_END, NUM_BLOCKS, FUELX0, MAX_FUELS, isModerator, isReflector, isFuel, fuelSlot } from './blocks.js';
+import { MOD0, REFL0, CONDUCTOR, COOLER0, COOLER_END, NUM_BLOCKS, FUELX0, MAX_FUELS, isModerator, isReflector, isFuel, fuelSlot } from './blocks.js';
 
 /** Blocks that take part in neutronics (fuel, moderators, reflectors). Everything else is equivalent for flux. */
 const NEUTRONIC = new Uint8Array(NUM_BLOCKS);
@@ -117,16 +117,6 @@ export interface FuelUsage {
   perHour: number;
   rawHeating: number;
   effectiveHeating: number;
-}
-
-interface Line {
-  /** 0 none, 1 fuel target, 2 reflector */
-  type: number;
-  target: number;
-  flux: number;
-  eff: number;
-  /** number of moderators in the line */
-  len: number;
 }
 
 interface NeutronSlot {

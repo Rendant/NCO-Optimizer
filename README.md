@@ -1,85 +1,103 @@
 # NC:O Fission Optimizer
 
-A web app that designs and analyses **NuclearCraft: Overhauled** (1.12.2, `1.12.2o` branch) fission reactors:
-solid-fuel reactors (SFR, heat sinks → high-pressure steam) and molten-salt reactors (MSR, coolant heaters → hot NaK).
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+![Node 20+](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)
+![TypeScript](https://img.shields.io/badge/language-TypeScript-blue.svg)
 
-* **Engine** (`packages/engine`) — a pure TypeScript, dependency-free simulator + optimizer, ported from the mod's Java source and unit-tested on its own.
-* **Server** (`apps/server`) — Fastify API; every optimization job fans out to N `worker_threads` (independent seeds) and streams progress over SSE.
-* **Web** (`apps/web`) — React + Vite + three.js (react-three-fiber) UI: configuration, live progress, 3D view, 2D layer view, stats, “why” insights, per-block inspector, layout editor and comparison table.
+A web app that designs and analyses fission reactors for **NuclearCraft: Overhauled** (Minecraft 1.12.2, `1.12.2o` branch).
+It covers solid-fuel reactors (SFR: heat sinks → high-pressure steam) and molten-salt reactors (MSR: coolant heaters → hot NaK),
+and it designs the steam turbines and heat exchangers to go with them.
 
-```
+The simulator is a TypeScript port of the mod's own Java logic, and a fuzz test checks it against a literal port of that code.
+The optimizer searches for the best layout under your constraints and uses all CPU cores.
+
+![NC:O Fission Optimizer: optimizing a 5×5×5 LEU-235 Oxide reactor with live stats and 3D view](docs/screenshot.png)
+
+## Features
+
+- **Exact simulation.** Neutron flux, criticality, moderator lines, reflectors, cooler placement rules, clusters, sparsity penalty, MSR vessel bunches and neutron sources all follow the mod's source and default config.
+- **Optimizer.** Simulated annealing with racing chains, rule-aware cooler repair and exhaustive neighbourhood polish. Jobs run in parallel worker threads and stream live progress to the UI.
+- **Every fuel.** All 81 SFR fuels (oxide, nitride, zirconium alloy) and all 27 MSR fluoride fuels. One reactor can mix up to 8 fuels.
+- **Objectives and constraints.** Maximise output, efficiency, output × efficiency, or breeding rate. Optional limits on fuel count and minimum efficiency.
+- **3D and layer views.** A block inspector explains every value: flux, criticality, moderator lines, and which placement rules a cooler passes or fails.
+- **Layout editor.** Paint blocks and see the result re-simulate instantly. *Improve* continues optimizing any layout.
+- **Comparison and result library.** Compare the best layouts side by side. The server keeps the best results and reuses them as seeds for later runs.
+- **Turbine and heat-exchanger designers.** Turn the reactor's output into real RF/t.
+- **JSON import/export** of layouts and an HTTP API for scripting.
+
+## Quick start
+
+Requires [Node.js](https://nodejs.org/) 20 or newer.
+
+```sh
+git clone https://github.com/Rendant/ncopt.git ncopt
+cd ncopt
 npm install
-npm test          # engine tests (incl. fuzz test against a literal port of the Java control flow)
-npm start         # builds web + server, serves everything on http://localhost:8787
-# development: npm run dev:server  (API on :8787)  +  npm run dev:web  (Vite on :5173, proxies /api)
+npm start
 ```
-Requires Node 20+.
+
+`npm start` builds the web UI and the server, then serves everything at <http://localhost:8787>.
+
+### Configuration
+
+| Variable | Default | |
+|---|---|---|
+| `PORT` | `8787` | HTTP port |
+| `HOST` | `127.0.0.1` | Bind address. Use `0.0.0.0` to accept connections from other machines. The API has no authentication, so only do this on a trusted network. |
+| `NCOPT_LIBRARY` | `apps/server/data/library.json` | Where the result library is stored |
+| `LOG_LEVEL` | `info` | Fastify log level |
 
 ## Using it
 
-1. Pick **reactor type**, **interior size** (1–24 per axis, casing excluded), **fuel** (all 81 SFR oxide/nitride/zirconium-alloy and 27 MSR fluoride fuels), SFR heating fluid, neutron source type.
-   **Multiple fuels**: add up to 7 more fuels under the main one (*+ add fuel…*). The optimizer then decides which fuel goes into every cell / vessel together with the rest of the design (it may leave out fuels that do not help the objective unless *Use every listed fuel* is on). Each component uses its own fuel's heat, efficiency, criticality, lifetime and self-priming; MSR vessels only bunch with adjacent vessels of the **same** fuel (MoltenSaltFissionLogic.formFuelBunches); SFR cells never bunch. Stats show a per-fuel table (running / placed, heat share, consumption); in the views each fuel slot has its own colour (C, C2, C3… / V, V2…).
-2. Pick the **objective**: *output* (effective heat), *efficiency*, *balanced* (output × efficiency) or *breeding* (maximum fuel consumption rate, fuel/h — the most running, fully cooled fuel components in producing clusters; in NC:O every running component consumes fuel at the same base rate regardless of heat multiplier, so this is a fuel-count objective with effective heat as tie-breaker; useful for breeding isotopes or processing fuel fast), optional constraints *max fuel components* and *min efficiency*.
-3. Choose allowed **moderators / reflectors / conductors / heat sinks or heaters** (“no rare” drops the hard-to-get ones), symmetry (X/Y/Z mirror – much faster and usually as good), time limit and worker count.
-4. **Optimize**. The live best layout updates while the search runs; when it finishes each worker's best layout is added to the **Compare** table (best stable value per column highlighted, deltas relative to the selected layout).
-5. Inspect: 3D view (orbit, axis cut-away, hide inactive / moderators) or **Layers** view (every block, Y = vertical, north at top). Colour by *block type, active/inactive, cluster, fuel efficiency, neutron flux*. Click any block for the **inspector**: flux vs. criticality, heat multiplier, every moderator line (length, flux, efficiency, partner), efficiency factors, or the cooler's placement rule with each condition ✓/✗.
-6. **Stats & insights** lists effective heat, RF/t (ideal turbine) and steam, MSR hot-coolant per type, raw heat vs cooling and margin, efficiency, heat multiplier, sparsity penalty, fuel use, per-cluster and per-cooler breakdowns, a minimal **neutron-source plan** (magenta) and plain-language explanations of what drives or limits the design.
-7. Edit (Layers → *edit*; left click paints, right click erases) to try changes — results re-simulate instantly. **Improve** (*Improve selected* in the config panel, or the *Improve* button in any Compare / Library row) runs the optimizer with every search starting from that layout at a lower temperature, so you can keep polishing a good design (current objective, components and time limit apply). Layouts persist in localStorage and export/import as JSON.
-8. **Search progress** chart (left panel) shows each worker's best stable H/t over time, live and after the run.
-9. **Library** (left panel): the server keeps the 10 best stable layouts per *reactor · size · fuel · heating fluid · objective* (`apps/server/data/library.json`, override with `NCOPT_LIBRARY`). Finished runs are saved automatically; new runs use up to 4 compatible entries (only allowed blocks) as extra seeds. *Open* loads an entry into the viewer, *Improve* continues optimizing it, × deletes it. Toggle with *Use result library*.
-10. *Share best layouts between workers*: worker threads publish their best layout to a shared buffer; at stage boundaries a worker that is behind adopts the leader's layout as a racing candidate (off = fully independent searches, more diversity).
+1. **Configure the reactor.** Pick the reactor type, the interior size (1–24 per axis, casing excluded), the fuel, the SFR heating fluid and the neutron source type.
+   **Multiple fuels:** add up to 7 more fuels under the main one (*+ add fuel…*). The optimizer then chooses which fuel goes into each cell or vessel as part of the design. It may leave out fuels that do not help the objective unless *Use every listed fuel* is on. Each component uses its own fuel's heat, efficiency, criticality, lifetime and self-priming. MSR vessels only bunch with adjacent vessels of the **same** fuel (`MoltenSaltFissionLogic.formFuelBunches`), and SFR cells never bunch. Stats show a per-fuel table (running / placed, heat share, consumption). In the views each fuel slot has its own colour (C, C2, C3… / V, V2…).
+2. **Pick the objective.**
+   - *output*: effective heat.
+   - *efficiency*.
+   - *balanced*: output × efficiency.
+   - *breeding*: maximum fuel consumption rate (fuel/h). In NC:O every running fuel component consumes fuel at the same base rate regardless of heat multiplier, so this objective maximises the number of running, fully cooled fuel components in producing clusters, with effective heat as the tie-breaker. Use it for breeding isotopes or processing fuel fast.
 
-## Mechanics implemented (from source, default config)
+   Optional constraints: *max fuel components* and *min efficiency*.
+3. **Choose the allowed blocks.** Select the moderators, reflectors, conductors and heat sinks or heaters (*no rare* drops the hard-to-get ones). Then set symmetry, the time limit and the worker count. Symmetry (X/Y/Z mirror) is much faster and usually gives results that are as good.
+4. **Optimize.** The best layout so far updates live while the search runs. When it finishes, each worker's best layout is added to the **Compare** table. The best stable value in each column is highlighted, and deltas are shown relative to the selected layout.
+5. **Inspect.** Use the 3D view (orbit, axis cut-away, hide inactive blocks or moderators) or the **Layers** view (every block, Y vertical, north at top). Colour by *block type, active/inactive, cluster, fuel efficiency* or *neutron flux*. Click any block to open the **inspector**: flux vs. criticality, heat multiplier, every moderator line (length, flux, efficiency, partner), efficiency factors, or the cooler's placement rule with each condition marked ✓/✗.
+6. **Read the stats and insights.** Effective heat, RF/t (ideal turbine) and steam, MSR hot coolant per type, raw heat vs. cooling and margin, efficiency, heat multiplier, sparsity penalty, fuel use, and per-cluster and per-cooler breakdowns. You also get a minimal **neutron-source plan** (magenta) and plain-language explanations of what drives or limits the design.
+7. **Edit.** Use *Layers → edit* (left click paints, right click erases) to try changes; results re-simulate instantly. **Improve** reruns the optimizer with every search starting from that layout at a lower temperature, so you can keep polishing a good design. It is available as *Improve selected* in the config panel and as the *Improve* button in any Compare or Library row. The current objective, components and time limit apply. Layouts persist in localStorage and can be exported or imported as JSON.
+8. **Watch progress.** The **Search progress** chart (left panel) shows each worker's best stable H/t over time, both live and after the run.
+9. **Use the library.** The **Library** (left panel) holds the 10 best stable layouts per *reactor · size · fuel · heating fluid · objective*. Finished runs are saved automatically. New runs use up to 4 compatible entries (those using only allowed blocks) as extra seeds. *Open* loads an entry into the viewer, *Improve* continues optimizing it, and × deletes it. Turn the library on or off with *Use result library*.
+10. **Share layouts between workers.** With *Share best layouts between workers* on, each worker thread publishes its best layout to a shared buffer. At each stage boundary, a worker that is behind adopts the leader's layout as a racing candidate. Turn it off for fully independent searches and more diversity.
 
-The FTB wiki describes the pre-Overhauled mechanics, so the simulation follows the Overhauled Java source
-(`FissionReactorLogic`, `SolidFuelFissionLogic`, `MoltenSaltFissionLogic`, `IFissionFuelComponent.defaultDistributeFlux`, `TileSolidFissionCell`, `TileSaltFissionVessel`, `FissionFuelBunch`, `FissionPlacement`, `PlacementRule`, `TileSolidFissionSink`, `TileFissionSource`, `NCConfig` defaults):
+## How it works
 
-* **Neutron flux**: from each fuel component, straight lines of 1–`fission_neutron_reach` (4) moderators; a line ending at another fuel component gives it Σ moderator flux factors and +1 heat multiplier; a line of ≤ 2 moderators ending at a reflector reflects `floor(2·flux·reflectivity)` back. Line efficiency = mean moderator efficiency (× reflector efficiency).
-* **Criticality**: iterated to a fixed point exactly like the mod (components that fail to reach criticality are reset and the search restarts). Efficiency = heat-mult × fuel eff × source eff × mean line efficiency × flux factor `(1+e^(-2c))/(1+e^(2(flux−2c)))`.
-* **Moderators**: active (adjacent to a fuel component at the end of a complete line) vs passive; only active ones satisfy “moderator” rules.
-* **Heat sinks / heaters**: all 32 default placement rules parsed (at least / exactly / at most, axial, casing, vertex/edge), with the mod's exact/at-most re-check pass; the cooling rates are the defaults.
-* **Clusters**: connected running fuel / valid coolers / conductors; casing connection; overcooling efficiency factor `min(1, (heat+10)/cooling)`; heat must be ≤ cooling in **every** cluster for the design to count as stable. SFR only uses wall-connected clusters.
-* **Sparsity penalty**: 0.5 multiplier curve below 75 % functional interior.
-* **MSR**: vessel bunches (surface factor, bunching factor, bunch criticality), heater heating speed = cluster efficiency × sparsity × (heat/cooling if overcooled); hot coolant = speed × rate / 128 mB/t.
-* **SFR output**: water 64 H/mB (preheated 32) → 4 mB high-pressure steam, 16 RF/mB in an ideal turbine. Fuel use from fuel time and the undercooling lifetime factor.
-* **Neutron sources**: casing ray to the first fuel component, blocked by reflectors with reflectivity ≥ 1; MSR bunches need ≥ surface-factor sources. A greedy planner places a minimal set and re-simulates with source efficiency.
+### Reactor mechanics
 
-**Assumptions / limitations**: default mod config; the optimizer treats every fuel component as primed (the source plan then shows what's needed and the source-efficiency-adjusted result); neutron shields, irradiators and TRISO / decay-heat mechanics are not modelled; the “ideal RF/t” stat is 16 RF/mB; the Turbine tab gives the real figure for an optimised turbine.
+- **Neutron flux:** each fuel component sends straight lines of 1–`fission_neutron_reach` (4) moderators. A line that ends at another fuel component gives it the sum of the moderator flux factors and +1 heat multiplier. A line of ≤ 2 moderators that ends at a reflector reflects `floor(2·flux·reflectivity)` back. Line efficiency = mean moderator efficiency (× reflector efficiency).
+- **Criticality:** iterated to a fixed point exactly as in the mod. Components that fail to reach criticality are reset and the search restarts. Efficiency = heat multiplier × fuel efficiency × source efficiency × mean line efficiency × flux factor `(1+e^(-2c))/(1+e^(2(flux−2c)))`.
+- **Moderators:** a moderator is *active* if it is adjacent to a fuel component at the end of a complete line, otherwise *passive*. Only active moderators satisfy "moderator" placement rules.
+- **Heat sinks / heaters:** all 32 default placement rules are parsed (at least / exactly / at most, axial, casing, vertex/edge), including the mod's re-check pass for exact and at-most rules. Cooling rates are the defaults.
+- **Clusters:** connected running fuel components, valid coolers and conductors, plus their casing connection. Overcooling efficiency factor is `min(1, (heat+10)/cooling)`. A design counts as stable only if heat ≤ cooling in **every** cluster. SFR uses only wall-connected clusters.
+- **Sparsity penalty:** a 0.5 multiplier curve below 75 % functional interior.
+- **MSR:** vessel bunches (surface factor, bunching factor, bunch criticality). Heater heating speed = cluster efficiency × sparsity × (heat/cooling if overcooled). Hot coolant = speed × rate / 128 mB/t.
+- **SFR output:** water at 64 H/mB (preheated water 32 H/mB) → 4 mB high-pressure steam, 16 RF/mB in an ideal turbine. Fuel use comes from the fuel time and the undercooling lifetime factor.
+- **Neutron sources:** a ray from the casing to the first fuel component, blocked by reflectors with reflectivity ≥ 1. MSR bunches need at least as many sources as their surface factor. A greedy planner places a minimal set of sources and re-simulates with source efficiency.
 
-## Turbine designer
+### Optimizer
 
-The **Turbine** tab designs the best NC:O steam turbine(s) for the selected reactor (`packages/engine/src/turbine.ts`, ported from `TurbineLogic`, `Turbine`, `TurbinePlacement`, `TurbineRotorBladeUtil`, `TurbineDynamoCoilType`, `TileTurbineDynamoPart`):
+Simulated annealing over symmetry orbits, with the exact simulator as the fitness function:
 
-* Input: the reactor's high-pressure steam (SFR directly; MSR hot coolant through an ideal heat exchanger: 128 H/mB × 2 → water 64 H/mB → 4 mB HP steam). The value can be overridden.
-* Steady-state power = steam × 16 RF/mB × dynamo conductivity × rotor efficiency × total-expansion ideality × throughput efficiency × power bonus — every factor exactly as in `TurbineLogic.onUpdateServer` (expansion levels `∏k·√k`, ideal `4^((d+½)/L)`, effective min/max length, leniency, bearing-tension limit 105 % of 100 mB/t per blade).
-* Rotor: an exact dynamic programme over all blade/stator sequences (state = blade counts per type), for every length 1–24; then every diameter / shaft width is scored.
-* Dynamo walls: coil validity is the fixed point of the coil rules (Mg next to a bearing or connector, Be next to Mg, Al next to two Mg, Au next to Al, Cu next to Be, Ag next to Au and Cu, connectors next to any coil); conductivity = Σ / max(shaft², coils), optimised by simulated annealing per candidate geometry.
-* Output: power, RF/mB, exterior size, every efficiency factor explained, rotor layer strip with ideal vs. actual expansion, the coil wall, a parts list and size/power alternatives. Very large steam flows are split across several identical turbines.
-* Assumptions: a single turbine type per design (both end walls identical), inlet/outlet placed in a wall corner, steady state (spin-up only affects how fast full power is reached). For MSR the steam comes from the designed heat exchanger (below); before one is designed, a lossless exchanger is assumed.
+- **Seeds and moves:** the search starts from constructive lattice seeds (every allowed moderator × spacing 2–5), random seeds and, optionally, library layouts. Moves are: a random block, a rule-aware "smart" cooler choice, insertion of a straight fuel–moderator–fuel/reflector line, swaps and neighbour swaps.
+- **Scoring:** infeasible designs (overheating or a violated constraint) get a penalty with a growing weight, and a criticality-progress shaping term guides the early search. The run finishes with a greedy single-orbit polish and a cleanup that turns useless blocks into air.
+- **Compound structural moves:** every proposal that touches fuel, moderators or reflectors is followed by a greedy cooler repair. Air and invalid coolers become the best cooler whose rule is satisfied, until the excess heat is covered. The repair covers the whole layout for ≤ 40 orbits, otherwise the 2-block neighbourhood of the change. The move and the repair are accepted or rejected together.
+- **Incremental evaluation:** flux, criticality and moderator/reflector activity depend only on the positions of fuel, moderators and reflectors. The simulator therefore caches that phase in two slots (current layout and last proposal) and re-runs only the cooler/cluster/stats phase for cooler-only changes. Placement rules are compiled into 64-entry truth tables over the 6-face neighbour mask, static rules are decided once, and clusters use flat arrays.
+- **Incremental cooler solve:** dependencies between cooler types are precomputed from the placement rules. After a change, only the cells whose neighbourhood or neutronic state changed, plus the coolers that transitively depend on them, are re-solved; large changes fall back to a full solve.
+- **Incremental neutronics:** when ≤ 5 neutronic cells change, only fuel components whose moderator lines cross them are re-traced. Randomized tests check all incremental paths against a fresh simulator (SFR and MSR).
+- **Racing (successive halving):** 16 annealing chains start from the best-ranked seeds. After each stage the worse half is dropped and the survivors continue (16 → 8 → 4 → 2 → 1). Each stage gets equal time and is re-heated to max(0.3, 0.6^stage) of the start temperature.
+- **Bilevel cooler optimization:** in the final polish phase each candidate gets 8 greedy inner cooler moves before it is judged (`INNER_POLISH`). The outer search therefore judges a structure by (approximately) its best cooler assignment. Two more variants are implemented but off by default because they slowed the search more than they helped on the benchmark: running the inner loop on every annealing step (`INNER`), and a heat-balancing move (`BAL_STEPS`) that downgrades coolers in overcooled clusters to the cheapest valid type that still covers the heat.
+- **Exhaustive neighbourhood polish:** the last 20 % of the time alternates two passes, taking the first improvement found, for up to 4 rounds. One is a greedy single-orbit pass. The other is a *compound* pass that tries every orbit × every structural block (fuel, moderators, reflectors, air), each followed by cooler re-optimization. Full enumeration is infeasible: even a symmetric 5³ reactor has 27 orbits × 30+ block types ≈ 10⁴⁰ layouts. So the search is exhaustive only over this neighbourhood of single structural changes.
 
-## Heat exchanger (MSR)
+Elite pools, iterated local search with kicks, and slab crossover between elites were tried. They gave no measurable gain on the benchmark, so they are not used.
 
-The **Heat exch.** tab (MSR layouts) designs heat exchanger(s) that turn the reactor's hot coolant into high-pressure steam for the turbine (`packages/engine/src/hx.ts`, ported from `HeatExchangerLogic`, `HeatExchangerFlowHelper`, `HeatExchangerTubeNetwork`, `HeatExchangerRecipes`, `BasicRecipe`, default config):
-
-* Generic steady-state simulator `simulateHX(layout)`: tube networks through open tube faces (dangling / missing inlet-outlet checks), shell connectivity and baffles, flow directions from every inlet–outlet pair's shortest paths (exact port of the flow helper), useful tubes, mean tube/shell flow, `flowCosine` and the contraflow test (< 1/24), arithmetic mean temperature difference (LMTD off), temperature-cross rejection, flow-direction multipliers (water prefers upward flow: ×1.5 up / ×0.5 down), heat moved = ΔT × multipliers × Σ tube coefficient on the cooled side and × retention on the heated side; tube types copper 16 / 0.9, hard carbon 24 / 0.95, thermoconducting 32 / 1.
-* Recipes: every hot heater coolant (NaK, Iron-NaK, …) 1 mB → 1 mB, 256 heat (128 × NaK multiplier 2), 800 → 400 K; water 1 mB → 4 mB HP steam, 64 heat, 300 → 600 K (preheated water 32 heat, 400 → 600 K).
-* Designer: a cross-flow exchanger — straight tube rows along X (open only east/west; inlet on the east wall, outlet on the west wall), one coolant type per row, shell inlets under the west column on the bottom face and outlets above the east column on the top face, so water rises against the coolant (upward bonus, contraflow). It picks the smallest exterior that processes all hot coolant, verifies it with the exact simulator (adds rows where edge effects lose the upward bonus), splits huge flows across several identical exchangers, and compares the three tube types. Output: steam, size, coolant circuits, an east-wall map of which row carries which coolant, build steps and a parts list. The Turbine tab then uses this steam.
-* Assumptions: all inputs supplied continuously (water unlimited), exchanger switched on (redstone / computer), one exchanger design per reactor (several identical copies if needed).
-
-## Optimizer
-
-Simulated annealing over symmetry orbits with the exact simulator as the fitness function:
-constructive lattice seeds (every allowed moderator × spacing 2–5) + random seeds; (optionally library layouts); racing annealing chains (below); moves = random block, rule-aware “smart” cooler choice, straight fuel–moderator–fuel/reflector line insertion, swaps and neighbour swaps; infeasibility (overheating / constraint violation) is penalised with a growing weight and a criticality-progress shaping term guides early search; then a greedy single-orbit polish and a cleanup that turns useless blocks into air.
-
-* **Compound structural moves**: every proposal that touches fuel, moderators or reflectors is followed by a greedy cooler repair (air / invalid coolers → the best cooler whose rule is satisfied, until the excess heat is covered; whole layout for ≤ 40 orbits, otherwise the 2-block neighbourhood of the change) and accepted or rejected together.
-* **Incremental evaluation**: flux, criticality and moderator/reflector activity depend only on fuel, moderator and reflector positions, so the simulator caches that phase in two slots (current layout + last proposal) and re-runs only the cooler/cluster/stat phase for cooler-only changes. Placement rules are compiled into 64-entry truth tables over the 6-face neighbour mask, static rules are decided once, clusters use flat arrays. A randomized test checks incremental results against a fresh simulator (SFR and MSR).
-* **Racing (successive halving)**: 16 annealing chains start from the best-ranked seeds; after each stage the worse half is dropped and the survivors continue (16 → 8 → 4 → 2 → 1, equal time per stage, re-heated to max(0.3, 0.6^stage) of the start temperature). This replaced the fixed 8-chain portfolio and was the largest single gain this round.
-* **Bilevel cooler optimization**: after each structural move the coolers are repaired (see above); in the final polish phase each candidate also gets 8 greedy inner cooler moves before it is judged (`INNER_POLISH`), i.e. the outer search judges a structure by (approximately) its best cooler assignment. Running the inner loop on every annealing step (`INNER`) and the heat-balancing move (`BAL_STEPS`: downgrade coolers in overcooled clusters to the cheapest valid type that still covers the heat) are implemented but off by default — they slowed the search more than they helped on the benchmark.
-* **Exhaustive neighbourhood polish**: the last 20 % of the time alternates a greedy single-orbit pass with a *compound* pass that tries every orbit × every structural block (fuel / moderators / reflectors / air) followed by cooler re-optimization, taking first improvements, up to 4 rounds. (Full enumeration is infeasible even for symmetric 5³ — 27 orbits × 30+ block types ≈ 10⁴⁰ layouts — so exhaustiveness is limited to this 1-structural-change neighbourhood.)
-* **Incremental cooler solve**: placement-rule dependencies between cooler types are precomputed; after a change only the cells whose neighbourhood changed (or whose neutronic state changed) and the coolers that transitively depend on them are re-solved, falling back to a full solve for large changes. **Incremental neutronics**: when ≤ 5 neutronic cells change, only fuel components whose moderator lines cross them are re-traced. Both are checked against a fresh simulator by randomized tests.
-* Elite pools, iterated local search with kicks and slab crossover between elites were tried and gave no measurable gain on the benchmark, so they are not used; the old “restart from the best after 20k stagnant steps” was removed because it collapsed the portfolio on long runs.
-
-Benchmark (`packages/engine/test/bench.ts`, 2-core sandbox, single worker, same seeds; original version → previous round → current):
+**Benchmark** (`npm run bench`, 2-core machine, single worker, same seeds; first version → intermediate → current):
 
 | case | time × seeds | mean H/t | evals/s |
 |---|---|---|---|
@@ -89,11 +107,77 @@ Benchmark (`packages/engine/test/bench.ts`, 2-core sandbox, single worker, same 
 | SFR 5³ TBU Oxide, xyz-sym | 8 s × 16 | 1888 → 2116 → **2332** (+24 %) | 49k → 65k |
 | MSR 5³ HEU-235 Fluoride, xyz-sym | 8 s × 8 | 20114 → 24523 → **24998** (+24 %) | 32k → 41k |
 
-Worker exchange (API, SFR 7³ no sym, 2 workers × 6 s, 4 runs each): 13218 independent → 14121 with *share best layouts* (+7 %).
+Worker exchange (API, SFR 7³ no sym, 2 workers × 6 s, 4 runs each): mean 13218 H/t with independent workers vs. 14121 H/t with *share best layouts* (+7 %).
 
-Results are stochastic; run a few times / with more workers and compare.
+Results are stochastic, so run a few times or with more workers and compare.
 
-## API
+### Turbine designer
+
+The **Turbine** tab designs the best NC:O steam turbine(s) for the selected reactor (`packages/engine/src/turbine.ts`). It is ported from `TurbineLogic`, `Turbine`, `TurbinePlacement`, `TurbineRotorBladeUtil`, `TurbineDynamoCoilType` and `TileTurbineDynamoPart`.
+
+- **Input:** the reactor's high-pressure steam. An SFR supplies it directly. An MSR's hot coolant goes through an ideal heat exchanger: 128 H/mB × 2 → water at 64 H/mB → 4 mB HP steam. You can override the value.
+- **Power:** steady-state power = steam × 16 RF/mB × dynamo conductivity × rotor efficiency × total-expansion ideality × throughput efficiency × power bonus. Every factor matches `TurbineLogic.onUpdateServer`: expansion levels `∏k·√k`, ideal expansion `4^((d+½)/L)`, effective min/max length, leniency, and the bearing-tension limit of 105 % of 100 mB/t per blade.
+- **Rotor:** an exact dynamic programme over all blade/stator sequences (state = blade counts per type) for every length 1–24. Every diameter and shaft width is then scored.
+- **Dynamo walls:** coil validity is the fixed point of the coil rules:
+  - Mg next to a bearing or a connector
+  - Be next to Mg
+  - Al next to two Mg
+  - Au next to Al
+  - Cu next to Be
+  - Ag next to Au and Cu
+  - connectors next to any coil
+
+  Conductivity = Σ / max(shaft², coils), optimised by simulated annealing for each candidate geometry.
+- **Output:**
+  - power and RF/mB
+  - exterior size
+  - every efficiency factor, explained
+  - a rotor layer strip with ideal vs. actual expansion
+  - the coil wall
+  - a parts list
+  - size/power alternatives
+
+  Very large steam flows are split across several identical turbines.
+
+### Heat exchanger (MSR)
+
+The **Heat exch.** tab (MSR layouts only) designs heat exchanger(s) that turn the reactor's hot coolant into high-pressure steam for the turbine (`packages/engine/src/hx.ts`). It is ported from `HeatExchangerLogic`, `HeatExchangerFlowHelper`, `HeatExchangerTubeNetwork`, `HeatExchangerRecipes` and `BasicRecipe` with the default config.
+
+- **Simulator:** the generic steady-state simulator `simulateHX(layout)` models:
+  - tube networks through open tube faces, with checks for dangling tubes and missing inlets/outlets
+  - shell connectivity and baffles
+  - flow directions from the shortest paths of every inlet–outlet pair (an exact port of the flow helper)
+  - useful tubes and mean tube/shell flow
+  - `flowCosine` and the contraflow test (< 1/24)
+  - arithmetic mean temperature difference (LMTD off) and rejection of temperature crosses
+  - flow-direction multipliers: water prefers upward flow (×1.5 up / ×0.5 down)
+
+  Heat moved = ΔT × multipliers × Σ tube coefficient on the cooled side, and × retention on the heated side. Tube types (coefficient / retention): copper 16 / 0.9, hard carbon 24 / 0.95, thermoconducting 32 / 1.
+- **Recipes:** every hot heater coolant (NaK, Iron-NaK, …): 1 mB → 1 mB, 256 heat (128 × NaK multiplier 2), 800 → 400 K. Water: 1 mB → 4 mB HP steam, 64 heat, 300 → 600 K. Preheated water: 32 heat, 400 → 600 K.
+- **Designer:** builds a cross-flow exchanger.
+  - Straight tube rows run along X and are open only east/west. The inlet is on the east wall and the outlet on the west wall. Each row carries one coolant type.
+  - Shell inlets sit under the west column on the bottom face and outlets above the east column on the top face. Water therefore rises against the coolant, which gives the upward bonus and contraflow.
+  - The designer picks the smallest exterior that processes all the hot coolant and verifies it with the exact simulator. It adds rows where edge effects lose the upward bonus, splits huge flows across several identical exchangers, and compares the three tube types.
+  - Output: steam, size, coolant circuits, an east-wall map of which row carries which coolant, build steps and a parts list. The Turbine tab then uses this steam.
+
+### Assumptions and limitations
+
+- **Reactors:**
+  - default mod config
+  - the optimizer treats every fuel component as primed; the source plan then shows which sources are needed and the result adjusted for source efficiency
+  - neutron shields, irradiators and TRISO / decay-heat mechanics are not modelled
+  - the "ideal RF/t" stat assumes 16 RF/mB; the Turbine tab gives the real figure for an optimised turbine
+- **Turbines:**
+  - one turbine type per design, with both end walls identical
+  - inlet and outlet placed in a wall corner
+  - steady state; spin-up only affects how fast full power is reached
+  - for an MSR the steam comes from the designed heat exchanger, or from a lossless exchanger until one is designed
+- **Heat exchangers:**
+  - all inputs supplied continuously, with unlimited water
+  - the exchanger is switched on (redstone or computer)
+  - one exchanger design per reactor, built as several identical copies if needed
+
+## HTTP API
 
 | Method | Path | |
 |---|---|---|
@@ -109,17 +193,55 @@ Results are stochastic; run a few times / with more workers and compare.
 | GET | `/api/library` | all library entries |
 | DELETE | `/api/library/:id` | remove an entry |
 
-Multi-fuel: `fuelIds` = fuel list with `fuelId` first (max 8); fuel slot k ≥ 1 is block id `40 + k − 1` (`FUELX0`), keys `cell_2` / `vessel_2`… in layout JSON (which then carries `fuelIds`). `/api/optimize` also takes `requireAllFuels`. Stats include `fuelBreakdown` (per fuel: placed, running, producing, perHour, rawHeating, effectiveHeating — MSR: share of the cluster's heater output by raw heat). The library key includes the whole fuel list.
+- **Grid encoding:** `index = x + X·(y + Y·z)`, with Y vertical. Block ids are defined in `packages/engine/src/blocks.ts`.
+- **Multi-fuel:**
+  - `fuelIds` is the fuel list with `fuelId` first (max 8). Fuel slot k ≥ 1 is block id `40 + k − 1` (`FUELX0`).
+  - In layout JSON these blocks use the keys `cell_2` / `vessel_2`…, and the layout carries `fuelIds`.
+  - `/api/optimize` also takes `requireAllFuels`.
+  - Stats include `fuelBreakdown`: per fuel, placed, running, producing, perHour, rawHeating and effectiveHeating. For an MSR, a fuel's share of a cluster's heater output is based on raw heat.
+  - The library key includes the whole fuel list.
+- **Optimize options:**
+  - `/api/optimize` also accepts `initial` (a grid to improve), `cooperate` (default true) and `useLibrary` (default true).
+  - Job snapshots include per-worker `history` (`[ms, best stable H/t, valid]`), `librarySeeds` and `libraryAdded`.
 
-`/api/optimize` also accepts `initial` (grid to improve), `cooperate` (default true) and `useLibrary` (default true); job snapshots include per-worker `history` (`[ms, best stable H/t, valid]`), `librarySeeds` and `libraryAdded`.
+## Project structure
 
-Grid encoding: `index = x + X·(y + Y·z)`, Y vertical; block ids in `packages/engine/src/blocks.ts`.
+This is an npm workspaces monorepo:
 
-## Layout
+| Package | |
+|---|---|
+| `packages/engine` | Pure TypeScript simulator + optimizer, no runtime dependencies. Usable on its own. |
+| `apps/server` | Fastify API. Each optimization job fans out to N `worker_threads` (independent seeds) and streams progress over SSE. |
+| `apps/web` | React + Vite + three.js (react-three-fiber) UI. |
 
 ```
 packages/engine/src   components.ts (config data) · blocks.ts · rules.ts · simulator.ts · analysis.ts · optimizer.ts · turbine.ts · hx.ts · layout.ts
-packages/engine/test  simulator.test.ts · multifuel.test.ts · turbine.test.ts · hx.test.ts · reference.ts (literal Java port oracle) · bench.ts (CASE=sfr5s|sfr7|sfr7s|tbu5s|msr5s) · simbench.ts · harness.ts
-apps/server/src       index.ts (routes) · jobs.ts (worker pool) · worker.ts · validate.ts · library.ts (result library) · exchange.ts (shared best-layout buffer)
+packages/engine/test  simulator.test.ts · multifuel.test.ts · turbine.test.ts · hx.test.ts · reference.ts (literal Java port oracle) · bench.ts · simbench.ts · harness.ts
+apps/server/src       index.ts (routes) · jobs.ts (worker pool) · worker.ts · task-worker.ts · validate.ts · library.ts (result library) · exchange.ts (shared best-layout buffer)
 apps/web/src          App.tsx · components/{ConfigPanel,Viewer3D,LayerGrid,StatsPanel,Inspector,Compare,TurbinePanel,HXPanel,ProgressChart,LibraryPanel}.tsx
 ```
+
+## Development
+
+```sh
+npm run dev:server   # API on :8787
+npm run dev:web      # Vite dev server on :5173, proxies /api to :8787
+npm test             # engine tests, incl. a fuzz test against a literal port of the Java control flow
+npm run typecheck    # TypeScript check of the web app and the engine
+npm run bench        # optimizer benchmark; pick a case with CASE=sfr5s|sfr7|sfr7s|tbu5s|msr5s
+```
+
+## Contributing
+
+Bug reports, ideas and pull requests are welcome.
+
+- **Before opening a PR,** make sure `npm test` and `npm run typecheck` pass.
+- **Mechanics:** if a result differs from what you see in game, please include the layout JSON (export from the UI) and the in-game numbers. Changes to the simulation should point to the NuclearCraft source they follow, and should keep the reference fuzz test passing.
+- **Optimizer:** please include benchmark numbers (`npm run bench`) for at least one case before and after the change.
+
+## License
+
+[MIT](LICENSE) © 2026 Gleb Yaurov
+
+The simulation is ported from [NuclearCraft](https://github.com/tomdodd4598/NuclearCraft) by tomdodd4598, which is also MIT-licensed; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+This is an unofficial fan project, not affiliated with or endorsed by the NuclearCraft authors, Mojang or Microsoft.

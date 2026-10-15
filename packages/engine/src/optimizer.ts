@@ -10,7 +10,7 @@
  */
 import { Simulator, ReactorStats } from './simulator.js';
 import { FUELS, FuelDef, ReactorType, COOLER_NAMES, HEATER_NAMES, MODERATORS, REFLECTORS, COOLING_RATES, FISSION_CONFIG } from './components.js';
-import { AIR, FUEL, MOD0, REFL0, CONDUCTOR, COOLER0, MAX_FUELS, isCooler, isModerator, isReflector, isFuel, fuelBlock } from './blocks.js';
+import { AIR, MOD0, REFL0, CONDUCTOR, COOLER0, MAX_FUELS, isCooler, isModerator, isReflector, isFuel, fuelBlock } from './blocks.js';
 
 const ENV = (globalThis as any).process?.env ?? {};
 const PORTF = Number(ENV.PORTF ?? 8), PORT_FRAC = Number(ENV.PORT_FRAC ?? 0.6), REHEAT = Number(ENV.REHEAT ?? 0.3);

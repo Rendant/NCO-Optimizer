@@ -87,12 +87,12 @@ export default function TurbinePanel({ stats, layoutKey, settings, setSettings, 
       <button className="primary" style={{ width: '100%', marginTop: 8 }} disabled={busy} onClick={run}>{busy ? 'Designing…' : result ? 'Redesign turbine' : 'Design turbine'}</button>
       {err && <p className="bad">{err}</p>}
       {!stats.stable && <p className="muted small">The reactor overheats; its steam figure is not meaningful until it is stable.</p>}
-      {result && cand && <TurbineResult result={result} cand={cand} onView={setView} view={view} />}
+      {result && cand && <TurbineResult result={result} cand={cand} onView={setView} />}
     </div>
   );
 }
 
-function TurbineResult({ result, cand, onView, view }: { result: TurbineOptimizeResult; cand: TurbineCandidate; onView: (i: number) => void; view: number }) {
+function TurbineResult({ result, cand, onView }: { result: TurbineOptimizeResult; cand: TurbineCandidate; onView: (i: number) => void }) {
   const s = cand.stats, d = cand.design;
   const n = result.turbines;
   const isBest = cand === result.best;

@@ -2,6 +2,7 @@
   "name": "ncopt",
   "private": true,
   "version": "1.0.0",
+  "license": "MIT",
   "description": "NuclearCraft: Overhauled fission reactor optimizer",
   "type": "module",
   "workspaces": [
